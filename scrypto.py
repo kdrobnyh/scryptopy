@@ -13,18 +13,22 @@
 # GNU General Public License for more details.
 
 
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Dict
 import os
 import sys
 import json
 import argparse
 import itertools
 import logging
+import random
+import secrets
 import gnupg
 from pathlib import Path
 from matplotlib import pyplot as plt
 from math import sin
 import shutil
+import base64
+import jsonschema
 
 
 gpg = gnupg.GPG()
@@ -33,6 +37,23 @@ gnupg_logger = logging.getLogger('gnupg')
 gnupg_logger.setLevel(logging.CRITICAL)
 findfont_logger = logging.getLogger('matplotlib.font_manager')
 findfont_logger.setLevel(logging.CRITICAL)
+
+
+prefix = b'SCryptoPy'
+salt_len_min = 10
+salt_len_max = 30
+
+keyJsonSchema = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "alg": {"type": "string"},
+            "pass": {"type": "string"},
+            "salts": {"type": "number"},
+        },
+    }
+}
 
 
 def read_content(file: Path) -> bytes:
@@ -61,6 +82,7 @@ def load_keys(keyfile: Union[str, Path]):
     with open(keyfile_path) as json_file:
         try:
             keys_loaded = json.load(json_file)
+            jsonschema.validate(instance=keys_loaded, schema=keyJsonSchema)
             return keys_loaded
         except Exception as e:
             logger.error('An error occurred while loading the keys...')
@@ -68,32 +90,57 @@ def load_keys(keyfile: Union[str, Path]):
             sys.exit(1)
 
 
-def encrypt(data: bytes, fname: str, keys: List[Tuple[str, str]]) -> Tuple[str, bytes]:
-    fnames = [fname] + [get_encrypted_name(fname)] * (len(keys) - 1)
-    for i, (fname, (enc_alg, key)) in enumerate(zip(fnames, keys)):
-        key = key.format(filename=fname)
+def generate_salt() -> str:
+    length = random.randrange(salt_len_min, salt_len_max)
+    return secrets.token_urlsafe(length)[:length]
+
+
+def encrypt(data: bytes, keys: List[Dict]) -> bytes:
+    for i, key in enumerate(keys):
+        alg = key['alg']
+        nsalts = key['salts']
+        if (nsalts > 255):
+            logger.error(f'Number of salts should be less than 256, but it\'s {nsalts} (stage {i}/{len(keys)})...')
+            sys.exit(1)
+        salts = {f'salt{x}': generate_salt() for x in range(nsalts)}
+        passphrase = key['pass'].format(**salts)
         temp = gpg.encrypt(data,
             None,
-            passphrase=key,
+            passphrase=passphrase,
             armor=False,
-            symmetric=enc_alg)
+            symmetric=alg)
+        data = prefix
+        for j in range(nsalts):
+            data += salts[f'salt{j}'].encode('utf8') + b'\0'
         if not temp.ok:
-            logger.error(f'Cannot encrypt input file "{fname}" with "{enc_alg}": "{temp.status}" (stage {i}/{len(keys)})...')
+            logger.error(f'Cannot encrypt input file with "{alg}": "{temp.status}" (stage {i}/{len(keys)})...')
             sys.exit(1)
-        data = temp.data
-    return fnames[-1], data
+        data += temp.data
+    return data
 
 
-def decrypt(data: bytes, fname: str, keys: List[Tuple[str, str]]) -> Tuple[str, bytes]:
-    fnames = [fname] * (len(keys) - 1) + [get_decrypted_name(fname)]
-    for i, (fname, (enc_alg, key)) in enumerate(zip(fnames, keys[::-1])):
-        key = key.format(filename=fname)
-        temp = gpg.decrypt(data, passphrase=key)
+def decrypt(data: bytes, keys: List[Dict]) -> bytes:
+    for i, key in enumerate(keys[::-1]):
+        alg = key['alg']
+        if not data.startswith(prefix):
+            logger.error(f'Cannot decrypt the data: wrong file content (stage {i}/{len(keys)})...')
+            sys.exit(1)
+        data = data[len(prefix):]
+        salts = {}
+        for j in range(key['salts']):
+            pos = data.find(b'\0', salt_len_min, salt_len_max)
+            if pos == -1:
+                logger.error(f'Cannot decrypt the data: cannot find the salt (stage {i}/{len(keys)})...')
+                sys.exit(1)
+            salts[f'salt{j}'] = data[:pos].decode('utf8')
+            data = data[pos+1:]
+        passphrase = key['pass'].format(**salts)
+        temp = gpg.decrypt(data, passphrase=passphrase)
         if not temp.ok:
-            logger.error(f'Cannot decrypt input file "{fname}" with "{enc_alg}": "{temp.status}" (stage {i}/{len(keys)})...')
+            logger.error(f'Cannot decrypt input file with "{alg}": "{temp.status}" (stage {i}/{len(keys)})...')
             sys.exit(1)
         data = temp.data
-    return fnames[-1], data
+    return data
 
 
 def __get_files(path: Path, root: Path) -> List[Path]:
@@ -141,12 +188,12 @@ def do_encrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union
         if not output_file.parent.exists():
             output_file.parent.mkdir()
         content = read_content(input_path / file)
-        encrypted_content = encrypt(content, file.name, keys)[1]
+        encrypted_content = encrypt(content, keys)
         output_file = output_path / get_encrypted_name(file.name)
         write_content(output_file, encrypted_content)
         if double_check:
             encrypted_content = read_content(output_file)
-            if content != decrypt(encrypted_content, output_file.name, keys)[1]:
+            if content != decrypt(encrypted_content, keys):
                 logger.error(f'Double-check for "{file.name}" was unsuccessful...')
                 sys.exit(1)
             else:
@@ -154,12 +201,14 @@ def do_encrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union
         logger.info(f'Encrypted {100 * (i + 1) / total :.2f}% [{total-i-1}/{total} left]...')
         logger.debug(f'File {file.name} has been encrypted, {total-i-1} out of {total} left...')
 
+
 def do_encrypt_wrapper(args):
     do_encrypt(
         input=args.input,
         output=args.output,
         keyfile=args.keyfile,
         double_check=args.double_check)
+
 
 def do_decrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union[str, Path]):
     logger.info('Starting to decrypt...')
@@ -192,7 +241,7 @@ def do_decrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union
         if not output_file.parent.exists():
             output_file.parent.mkdir()
         content = read_content(input_path / file)
-        content = decrypt(content, file.name, keys)[1]
+        content = decrypt(content, keys)
         write_content(output_file, content)
         logger.info(f'Decrypted {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
         logger.debug(f'File {file.name} has been decrypted, {total-i-1} out of {total} left...')
@@ -256,7 +305,7 @@ def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path], keyfile
         encrypted_file = encrypted_path / file.parent / get_encrypted_name(file.name)
         content_unencrypted = read_content(unencrypted_file)
         content_encrypted = read_content(encrypted_file)
-        content_decrypted = decrypt(content_encrypted, encrypted_file.name, keys)[1]
+        content_decrypted = decrypt(content_encrypted, keys)
         if content_unencrypted != content_decrypted:
             logger.error(f'Unencrypted content is different from encrypted: {file}')
         logger.info(f'Checked {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
@@ -295,14 +344,13 @@ def do_test(args):
             ''')
     gold_image = read_content(folder / 'unencrypted' / 'sin.png')
     gold_text = read_content(folder / 'unencrypted' / 'text.txt')
-    (folder / 'temp').mkdir()
     (folder / 'encrypted_folder').mkdir()
     # Test 1
-    keys = [('3DES', 'some_enc_key{filename}'),
-            ('AES256', 'prefix{filename}suffix'),
-            ('CAMELLIA256', 'some_key'),
-            ('TWOFISH', '???{filename}!!!'),
-            ('BLOWFISH', '{filename}')]
+    keys = [{'alg': '3DES', 'pass': 'some{salt0}_e{salt4}{salt1}nc_{salt2}key{salt3}', 'salts': 5},
+            {'alg': 'AES256', 'pass': 'prefix{salt0}suffix', 'salts': 1},
+            {'alg': 'CAMELLIA256', 'pass': 'some_key', 'salts': 0},
+            {'alg': 'TWOFISH', 'pass': '???{salt1}!!!', 'salts': 2},
+            {'alg': 'BLOWFISH', 'pass': '{salt0}', 'salts': 1}]
     with open(folder / 'keys' / '1.key', 'w') as f:
         f.write(json.dumps(keys))
     do_encrypt(
@@ -327,11 +375,11 @@ def do_test(args):
         if not args.keep: shutil.rmtree(folder)
         sys.exit(1)
     # Test 2
-    keys = [('AES256', 'prefix{filename}suffix')]
+    keys = [{'alg': 'AES256', 'pass': 'prefix{salt0}suffix', 'salts': 5}]
     with open(folder / 'keys' / '2.key', 'w') as f:
         f.write(json.dumps(keys))
-    keys = [('TWOFISH', '???{filename}!!!'),
-             ('AES256', 'prefix{filename}suffix')]
+    keys = [{'alg': 'TWOFISH', 'pass': '???{salt1}{salt3}!!!', 'salts': 5},
+            {'alg': 'AES256', 'pass': 'prefix{salt4}suffix', 'salts': 5}]
     with open(folder / 'keys' / '3.key', 'w') as f:
         f.write(json.dumps(keys))
     do_encrypt(folder / 'unencrypted' / 'text.txt',       folder / 'encrypted_files',
@@ -355,7 +403,7 @@ def do_test(args):
         if not args.keep: shutil.rmtree(folder)
         sys.exit(1)
     if not args.keep: shutil.rmtree(folder)
-    logger.info('All the tests are successfully passed.')
+    logger.info('All the tests have successfully passed.')
 
 
 if __name__ == '__main__':
@@ -374,8 +422,9 @@ if __name__ == '__main__':
     parser_encrypt.add_argument('output', type=str,
                             help='output folder to place the encrypted files')
     parser_encrypt.add_argument('keyfile', type=str,
-                            help='path to the key file\nshould contain something like that:\n' +
-                           '[("aes256", "some_enc_key"), ("blowfish", "another_key_{filename}")]')
+                            help='path to the key file. Example of key file content: ' +
+                           '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
+                           '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
     parser_encrypt.add_argument('-dc', '--double_check', action='store_true',
                             help='double-check the encryption')
     parser_encrypt.set_defaults(func=do_encrypt_wrapper)
@@ -386,8 +435,9 @@ if __name__ == '__main__':
     parser_decrypt.add_argument('output', type=str,
                             help='output folder to place the decrypted files')
     parser_decrypt.add_argument('keyfile', type=str,
-                            help='path to the key file\nshould contain something like that:\n' +
-                           '[("aes256", "some_enc_key"), ("blowfish", "another_key_{filename}")]')
+                            help='path to the key file. Example of key file content: ' +
+                           '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
+                           '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
     parser_decrypt.set_defaults(func=do_decrypt_wrapper)
 
     parser_test = subparsers.add_parser('test', help='test this script')
@@ -403,8 +453,9 @@ if __name__ == '__main__':
     parser_check.add_argument('encrypted', type=str,
                             help='encrypted folder or file')
     parser_check.add_argument('keyfile', type=str,
-                            help='path to the key file\nshould contain something like that:\n' +
-                           '[("aes256", "some_enc_key"), ("blowfish", "another_key_{filename}")]')
+                            help='path to the key file. Example of key file content: ' +
+                           '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
+                           '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
     parser_check.set_defaults(func=do_check_wrapper)
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=FORMAT, style='{')

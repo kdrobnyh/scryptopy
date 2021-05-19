@@ -25,10 +25,11 @@ import secrets
 import gnupg
 from pathlib import Path
 from matplotlib import pyplot as plt
-from math import sin
+from math import sin, cos
 import shutil
 import base64
 import jsonschema
+import click
 
 
 gpg = gnupg.GPG()
@@ -66,12 +67,12 @@ def write_content(file: Path, content: bytes):
         f.write(content)
 
 
-def get_encrypted_name(filename: str) -> str:
-    return filename + '.scp'
+def get_encrypted_name(file: Path) -> Path:
+    return file.parent / (file.name + '.scp')
 
 
-def get_decrypted_name(filename: str) -> str:
-    return filename[:filename.rfind('.')]
+def get_decrypted_name(file: Path) -> Path:
+    return file.parent / file.name[:file.name.rfind('.')]
 
 
 def load_keys(keyfile: Union[str, Path]):
@@ -104,6 +105,10 @@ def encrypt(data: bytes, keys: List[Dict]) -> bytes:
             sys.exit(1)
         salts = {f'salt{x}': generate_salt() for x in range(nsalts)}
         passphrase = key['pass'].format(**salts)
+        if passphrase.find('{') != -1:
+            logger.error(f'Passphrase = "{passphrase}"')
+            logger.error('Passphrase should not contain "\{" characters, exiting...')
+            sys.exit(1)
         temp = gpg.encrypt(data,
             None,
             passphrase=passphrase,
@@ -156,7 +161,13 @@ def get_files(root: Path) -> List[Path]:
     return __get_files(root, root)
 
 
-def do_encrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union[str, Path], double_check: bool):
+def do_encrypt(input: Union[str, Path], output: Union[str, Path],
+    keyfile: Union[str, Path], double_check: bool,
+    skip_existing: bool, confirm: bool = True):
+    if confirm:
+        if not click.confirm('Ready to proceed?', default=True):
+            logger.info('That\'s all right. Bye!')
+            sys.exit(0)
     logger.info('Starting to encrypt...')
     logger.debug(f'input        = "{input}"')
     logger.debug(f'output       = "{output}"')
@@ -170,8 +181,7 @@ def do_encrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union
     if output_path.is_file():
         logger.error('Output folder is a file, exiting...')
         sys.exit(1)
-    if not output_path.exists():
-        output_path.mkdir()
+    output_path.mkdir(exist_ok=True)
     if input_path.is_file():
         root = input_path.parent
         files = [input_path.relative_to(root)]
@@ -183,13 +193,17 @@ def do_encrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union
     keys = load_keys(keyfile)
     total = len(files)
     logger.info(f'Encrypting {total} file(s)...')
+
     for i, file in enumerate(files):
-        output_file = output_path / get_encrypted_name(file.name)
-        if not output_file.parent.exists():
-            output_file.parent.mkdir()
+        output_file = output_path / get_encrypted_name(file)
+        output_file.parent.mkdir(exist_ok=True, parents=True)
+        if skip_existing and output_file.exists():
+            logger.info(f'Skipped {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
+            logger.debug(f'File {file.name} has been skipped, {total-i-1} out of {total} left...')
+            continue
         content = read_content(input_path / file)
         encrypted_content = encrypt(content, keys)
-        output_file = output_path / get_encrypted_name(file.name)
+        output_file = output_path / get_encrypted_name(file)
         write_content(output_file, encrypted_content)
         if double_check:
             encrypted_content = read_content(output_file)
@@ -200,6 +214,7 @@ def do_encrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union
                 logger.info(f'"{file.name}" is double-checked...')
         logger.info(f'Encrypted {100 * (i + 1) / total :.2f}% [{total-i-1}/{total} left]...')
         logger.debug(f'File {file.name} has been encrypted, {total-i-1} out of {total} left...')
+    logger.info('All done!')
 
 
 def do_encrypt_wrapper(args):
@@ -207,10 +222,17 @@ def do_encrypt_wrapper(args):
         input=args.input,
         output=args.output,
         keyfile=args.keyfile,
-        double_check=args.double_check)
+        double_check=args.double_check,
+        skip_existing=args.skip_existing)
 
 
-def do_decrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union[str, Path]):
+def do_decrypt(input: Union[str, Path], output: Union[str, Path],
+    keyfile: Union[str, Path], skip_existing: bool,
+    confirm: bool = True):
+    if confirm:
+        if not click.confirm('Ready to proceed?', default=True):
+            logger.info('That\'s all right. Bye!')
+            sys.exit(0)
     logger.info('Starting to decrypt...')
     logger.debug(f'input        = "{input}"')
     logger.debug(f'output       = "{output}"')
@@ -223,8 +245,7 @@ def do_decrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union
     if output_path.is_file():
         logger.error('Output folder is a file, exiting...')
         sys.exit(1)
-    if not output_path.exists():
-        output_path.mkdir()
+    output_path.mkdir(exist_ok=True)
     if input_path.is_file():
         root = input_path.parent
         files = [input_path.relative_to(root)]
@@ -237,9 +258,12 @@ def do_decrypt(input: Union[str, Path], output: Union[str, Path], keyfile: Union
     total = len(files)
     logger.info(f'Decrypting {total} file(s)...')
     for i, file in enumerate(files):
-        output_file = output_path / get_decrypted_name(file.name)
-        if not output_file.parent.exists():
-            output_file.parent.mkdir()
+        output_file = output_path / get_decrypted_name(file)
+        output_file.parent.mkdir(exist_ok=True, parents=True)
+        if skip_existing and output_file.exists():
+            logger.info(f'Skipped {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
+            logger.debug(f'File {file.name} has been skipped, {total-i-1} out of {total} left...')
+            continue
         content = read_content(input_path / file)
         content = decrypt(content, keys)
         write_content(output_file, content)
@@ -251,14 +275,20 @@ def do_decrypt_wrapper(args):
     do_decrypt(
         input=args.input,
         output=args.output,
-        keyfile=args.keyfile)
+        keyfile=args.keyfile,
+        skip_existing=args.skip_existing)
 
 
-def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path], keyfile: Union[str, Path]):
+def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
+    keyfile: Union[str, Path], confirm: bool = True):
+    if confirm:
+        if not click.confirm('Ready to proceed?', default=True):
+            logger.info('That\'s all right. Bye!')
+            sys.exit(0)
     logger.info('Starting to check...')
     logger.debug(f'unencrypted    = "{unencrypted}"')
     logger.debug(f'encrypted      = "{encrypted}"')
-    logger.debug(f'keyfile              = "{keyfile}"')
+    logger.debug(f'keyfile        = "{keyfile}"')
     unencrypted_path = Path(unencrypted)
     if not unencrypted_path.exists():
         logger.error(f'Unencrypted input folder/file does not exist, exiting...')
@@ -289,12 +319,12 @@ def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path], keyfile
     logger.debug('Encrypted files:')
     logger.debug(encrypted_files)
     for file in unencrypted_files:
-        encrypted_file = file.parent / get_encrypted_name(file.name)
+        encrypted_file = get_encrypted_name(file)
         if encrypted_file not in encrypted_files:
             logger.error(f'There is a file that exists in unencrypted files, but encrypted version is missing: {file}')
             sys.exit(1)
     for file in encrypted_files:
-        unencrypted_file = file.parent / get_decrypted_name(file.name)
+        unencrypted_file = get_decrypted_name(file)
         if unencrypted_file not in unencrypted_files:
             logger.error(f'There is a file that exists in encrypted files, but unencrypted version is missing: {file}')
             sys.exit(1)
@@ -302,7 +332,7 @@ def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path], keyfile
     logger.info(f'Checking {total} file(s)...')
     for i, file in enumerate(unencrypted_files):
         unencrypted_file = unencrypted_path / file
-        encrypted_file = encrypted_path / file.parent / get_encrypted_name(file.name)
+        encrypted_file = encrypted_path / get_encrypted_name(file)
         content_unencrypted = read_content(unencrypted_file)
         content_encrypted = read_content(encrypted_file)
         content_decrypted = decrypt(content_encrypted, keys)
@@ -324,27 +354,36 @@ def do_test(args):
     while Path(f'./test_{i}').exists():
         i += 1
     folder = Path(f'./test_{i}')
+
+    logger.info(f'Path for testing is {folder}')
+
+    if not click.confirm('Ready to proceed?', default=True):
+        logger.info('That\'s all right. Bye!')
+        sys.exit(0)
+
     logger.info('Starting to test...')
     logger.debug(f'keep = "{args.keep}"')
     logger.debug(f'double_check = "{args.double_check}"')
-    logger.info(f'Path for testing is {folder}')
-    folder.mkdir()
-    (folder / 'unencrypted').mkdir()
-    (folder / 'keys').mkdir()
+    (folder / 'unencrypted' / 'plots').mkdir(parents=True)
+    (folder / 'unencrypted' / 'texts').mkdir(parents=True)
+    (folder / 'keys').mkdir(parents=True)
     x = [v / 100.0 for v in range(1000)]
     plt.plot(x, [sin(v) for v in x])
-    plt.savefig(folder / 'unencrypted' / 'sin.png')
+    plt.savefig(folder / 'unencrypted' / 'plots' / 'sin.png')
     plt.close()
-    with open(folder / 'unencrypted' / 'text.txt', 'w') as f:
+    plt.plot(x, [cos(v) for v in x])
+    plt.savefig(folder / 'unencrypted' / 'plots' / 'cos.png')
+    plt.close()
+    with open(folder / 'unencrypted' / 'texts' / 'text.txt', 'w') as f:
         f.write('''
             Lorem ipsum dolor sit amet,
             consectetur adipiscing elit,
             sed do eiusmod tempor incididunt
             ut labore et dolore magna aliqua.
             ''')
-    gold_image = read_content(folder / 'unencrypted' / 'sin.png')
-    gold_text = read_content(folder / 'unencrypted' / 'text.txt')
-    (folder / 'encrypted_folder').mkdir()
+    gold_plot_sin = read_content(folder / 'unencrypted' / 'plots' / 'sin.png')
+    gold_plot_cos = read_content(folder / 'unencrypted' / 'plots' / 'cos.png')
+    gold_text = read_content(folder / 'unencrypted' / 'texts' / 'text.txt')
     # Test 1
     keys = [{'alg': '3DES', 'pass': 'some{salt0}_e{salt4}{salt1}nc_{salt2}key{salt3}', 'salts': 5},
             {'alg': 'AES256', 'pass': 'prefix{salt0}suffix', 'salts': 1},
@@ -357,21 +396,30 @@ def do_test(args):
         input=folder / 'unencrypted',
         output=folder / 'encrypted_folder',
         keyfile=folder / 'keys' / '1.key',
-        double_check=args.double_check)
+        double_check=args.double_check,
+        skip_existing=False,
+        confirm=False)
     do_check(
         unencrypted=folder / 'unencrypted',
         encrypted=folder / 'encrypted_folder',
-        keyfile=folder / 'keys' / '1.key')
+        keyfile=folder / 'keys' / '1.key',
+        confirm=False)
     do_decrypt(
         input=folder / 'encrypted_folder',
         output=folder / 'decrypted_folder',
-        keyfile=folder / 'keys' / '1.key')
-    if gold_text != read_content(folder / 'decrypted_folder' / 'text.txt'):
+        keyfile=folder / 'keys' / '1.key',
+        skip_existing=False,
+        confirm=False)
+    if gold_text != read_content(folder / 'decrypted_folder' / 'texts' / 'text.txt'):
         logger.error(f'There is a problem of encrypting the folder: text...')
         if not args.keep: shutil.rmtree(folder)
         sys.exit(1)
-    if gold_image != read_content(folder / 'decrypted_folder' / 'sin.png'):
-        logger.error(f'There is a problem of encrypting the folder: image...')
+    if gold_plot_sin != read_content(folder / 'decrypted_folder' / 'plots' / 'sin.png'):
+        logger.error(f'There is a problem of encrypting the folder: sin plot...')
+        if not args.keep: shutil.rmtree(folder)
+        sys.exit(1)
+    if gold_plot_cos != read_content(folder / 'decrypted_folder' / 'plots' / 'cos.png'):
+        logger.error(f'There is a problem of encrypting the folder: cos plot...')
         if not args.keep: shutil.rmtree(folder)
         sys.exit(1)
     # Test 2
@@ -382,24 +430,74 @@ def do_test(args):
             {'alg': 'AES256', 'pass': 'prefix{salt4}suffix', 'salts': 5}]
     with open(folder / 'keys' / '3.key', 'w') as f:
         f.write(json.dumps(keys))
-    do_encrypt(folder / 'unencrypted' / 'text.txt',       folder / 'encrypted_files',
-        folder / 'keys' / '2.key', args.double_check)
-    do_check(folder / 'unencrypted' / 'text.txt',       folder / 'encrypted_files' / 'text.txt.scp',
-        folder / 'keys' / '2.key')
-    do_decrypt(folder / 'encrypted_files' / 'text.txt.scp', folder / 'decrypted_files',
-        folder / 'keys' / '2.key')
-    do_encrypt(folder / 'unencrypted' / 'sin.png',        folder / 'encrypted_files',
-        folder / 'keys' / '3.key', args.double_check)
-    do_check(folder / 'unencrypted' / 'sin.png',       folder / 'encrypted_files' / 'sin.png.scp',
-        folder / 'keys' / '3.key')
-    do_decrypt(folder / 'encrypted_files' / 'sin.png.scp',  folder / 'decrypted_files',
-        folder / 'keys' / '3.key')
+    keys = [{'alg': 'TWOFISH', 'pass': '{salt0}{salt3}', 'salts': 4},
+            {'alg': 'AES256', 'pass': 'prefixsuffix', 'salts': 0}]
+    with open(folder / 'keys' / '4.key', 'w') as f:
+        f.write(json.dumps(keys))
+    do_encrypt(
+        input=folder / 'unencrypted' / 'texts' / 'text.txt',
+        output=folder / 'encrypted_files',
+        keyfile=folder / 'keys' / '2.key',
+        double_check=args.double_check,
+        skip_existing=False,
+        confirm=False)
+    do_check(
+        unencrypted=folder / 'unencrypted' / 'texts' / 'text.txt',
+        encrypted=folder / 'encrypted_files' / 'text.txt.scp',
+        keyfile=folder / 'keys' / '2.key',
+        confirm=False)
+    do_decrypt(
+        input=folder / 'encrypted_files' / 'text.txt.scp',
+        output=folder / 'decrypted_files',
+        keyfile=folder / 'keys' / '2.key',
+        skip_existing=False,
+        confirm=False)
+    do_encrypt(
+        input=folder / 'unencrypted' / 'plots' / 'sin.png',
+        output=folder / 'encrypted_files',
+        keyfile=folder / 'keys' / '3.key',
+        double_check=args.double_check,
+        skip_existing=False,
+        confirm=False)
+    do_check(
+        unencrypted=folder / 'unencrypted' / 'plots' / 'sin.png',
+        encrypted=folder / 'encrypted_files' / 'sin.png.scp',
+        keyfile=folder / 'keys' / '3.key',
+        confirm=False)
+    do_decrypt(
+        input=folder / 'encrypted_files' / 'sin.png.scp',
+        output=folder / 'decrypted_files',
+        keyfile=folder / 'keys' / '3.key',
+        skip_existing=False,
+        confirm=False)
+    do_encrypt(
+        input=folder / 'unencrypted' / 'plots' / 'cos.png',
+        output=folder / 'encrypted_files',
+        keyfile=folder / 'keys' / '4.key',
+        double_check=args.double_check,
+        skip_existing=False,
+        confirm=False)
+    do_check(
+        unencrypted=folder / 'unencrypted' / 'plots' / 'cos.png',
+        encrypted=folder / 'encrypted_files' / 'cos.png.scp',
+        keyfile=folder / 'keys' / '4.key',
+        confirm=False)
+    do_decrypt(
+        input=folder / 'encrypted_files' / 'cos.png.scp',
+        output=folder / 'decrypted_files',
+        keyfile=folder / 'keys' / '4.key',
+        skip_existing=False,
+        confirm=False)
     if gold_text != read_content(folder / 'decrypted_files' / 'text.txt'):
         logger.error(f'There is a problem of encrypting the file: text...')
         if not args.keep: shutil.rmtree(folder)
         sys.exit(1)
-    if gold_image != read_content(folder / 'decrypted_files' / 'sin.png'):
-        logger.error(f'There is a problem of encrypting the file: image...')
+    if gold_plot_sin != read_content(folder / 'decrypted_files' / 'sin.png'):
+        logger.error(f'There is a problem of encrypting the file: sin plot...')
+        if not args.keep: shutil.rmtree(folder)
+        sys.exit(1)
+    if gold_plot_cos != read_content(folder / 'decrypted_files' / 'cos.png'):
+        logger.error(f'There is a problem of encrypting the file: cos plot...')
         if not args.keep: shutil.rmtree(folder)
         sys.exit(1)
     if not args.keep: shutil.rmtree(folder)
@@ -427,6 +525,8 @@ if __name__ == '__main__':
                            '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
     parser_encrypt.add_argument('-dc', '--double_check', action='store_true',
                             help='double-check the encryption')
+    parser_encrypt.add_argument('-s', '--skip_existing', action='store_true',
+                            help='skip files if their encrypted version already exist')
     parser_encrypt.set_defaults(func=do_encrypt_wrapper)
 
     parser_decrypt = subparsers.add_parser('decrypt', help='decrypt file or folder')
@@ -438,6 +538,8 @@ if __name__ == '__main__':
                             help='path to the key file. Example of key file content: ' +
                            '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
                            '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
+    parser_decrypt.add_argument('-s', '--skip_existing', action='store_true',
+                            help='skip files if their decrypted version already exist')
     parser_decrypt.set_defaults(func=do_decrypt_wrapper)
 
     parser_test = subparsers.add_parser('test', help='test this script')

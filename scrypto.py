@@ -16,6 +16,7 @@
 from typing import List, Tuple, Union, Dict
 import os
 import sys
+import hashlib
 import json
 import argparse
 import itertools
@@ -43,6 +44,7 @@ findfont_logger.setLevel(logging.CRITICAL)
 prefix = b'SCryptoPy'
 salt_len_min = 10
 salt_len_max = 30
+md5sum_length = 32
 
 keyJsonSchema = {
     "type": "array",
@@ -72,13 +74,16 @@ def get_encrypted_name(file: Path) -> Path:
 
 
 def get_decrypted_name(file: Path) -> Path:
+    if not file.name.endswith('.scp'):
+        logger.error(f'Filename of encrypted file "{file}" should have extension ".scp"...')
+        sys.exit(1)
     return file.parent / file.name[:file.name.rfind('.')]
 
 
 def load_keys(keyfile: Union[str, Path]):
     keyfile_path = Path(keyfile)
     if not keyfile_path.exists():
-        logger.error(f'Key file does not exist, exiting...')
+        logger.error(f'Key file "{keyfile_path}" does not exist, exiting...')
         sys.exit(1)
     with open(keyfile_path) as json_file:
         try:
@@ -86,7 +91,7 @@ def load_keys(keyfile: Union[str, Path]):
             jsonschema.validate(instance=keys_loaded, schema=keyJsonSchema)
             return keys_loaded
         except Exception as e:
-            logger.error('An error occurred while loading the keys...')
+            logger.error(f'An error occurred while loading the keys from "{keyfile_path}"...')
             print(e)
             sys.exit(1)
 
@@ -96,7 +101,13 @@ def generate_salt() -> str:
     return secrets.token_urlsafe(length)[:length]
 
 
-def encrypt(data: bytes, keys: List[Dict]) -> bytes:
+def calc_md5sum(data: bytes) -> str:
+    return hashlib.md5(data).hexdigest()
+
+
+def encrypt_file(file: Path, keys: List[Dict]) -> bytes:
+    data = read_content(file)
+    md5sum = calc_md5sum(data)
     for i, key in enumerate(keys):
         alg = key['alg']
         nsalts = key['salts']
@@ -114,37 +125,51 @@ def encrypt(data: bytes, keys: List[Dict]) -> bytes:
             passphrase=passphrase,
             armor=False,
             symmetric=alg)
-        data = prefix
+        data = b''
         for j in range(nsalts):
             data += salts[f'salt{j}'].encode('utf8') + b'\0'
         if not temp.ok:
-            logger.error(f'Cannot encrypt input file with "{alg}": "{temp.status}" (stage {i}/{len(keys)})...')
+            logger.error(f'Cannot encrypt "{file}" with "{alg}": "{temp.status}" (stage {i}/{len(keys)})...')
             sys.exit(1)
         data += temp.data
-    return data
+    return prefix + md5sum.encode('utf8') + b'\0' + data
 
 
-def decrypt(data: bytes, keys: List[Dict]) -> bytes:
+def parse_encrypted_file(file: Path) -> Tuple[str, bytes]:
+    data = read_content(file)
+    if not data.startswith(prefix):
+        logger.error(f'Cannot decrypt "{file}": wrong file content...')
+        sys.exit(1)
+    data = data[len(prefix):]
+    if len(data) <= md5sum_length:
+        logger.error(f'Cannot decrypt "{file}": wrong file content, empty...')
+        sys.exit(1)
+    md5sum = data[:md5sum_length].decode('utf8')
+    data = data[md5sum_length+1:]
+    return md5sum, data
+
+
+def decrypt_file(file: Path, keys: List[Dict]) -> bytes:
+    md5sum, data = parse_encrypted_file(file)
     for i, key in enumerate(keys[::-1]):
         alg = key['alg']
-        if not data.startswith(prefix):
-            logger.error(f'Cannot decrypt the data: wrong file content (stage {i}/{len(keys)})...')
-            sys.exit(1)
-        data = data[len(prefix):]
         salts = {}
         for j in range(key['salts']):
             pos = data.find(b'\0', salt_len_min, salt_len_max)
             if pos == -1:
-                logger.error(f'Cannot decrypt the data: cannot find the salt (stage {i}/{len(keys)})...')
+                logger.error(f'Cannot decrypt "{file}": cannot find the salt (stage {i}/{len(keys)})...')
                 sys.exit(1)
             salts[f'salt{j}'] = data[:pos].decode('utf8')
             data = data[pos+1:]
         passphrase = key['pass'].format(**salts)
         temp = gpg.decrypt(data, passphrase=passphrase)
         if not temp.ok:
-            logger.error(f'Cannot decrypt input file with "{alg}": "{temp.status}" (stage {i}/{len(keys)})...')
+            logger.error(f'Cannot decrypt "{file}" with "{alg}": "{temp.status}" (stage {i}/{len(keys)})...')
             sys.exit(1)
         data = temp.data
+    if md5sum != calc_md5sum(data):
+        logger.error(f'Cannot decrypt "{file}": failed integrity check...')
+        sys.exit(1)
     return data
 
 
@@ -163,7 +188,7 @@ def get_files(root: Path) -> List[Path]:
 
 def do_encrypt(input: Union[str, Path], output: Union[str, Path],
     keyfile: Union[str, Path], double_check: bool,
-    skip_existing: bool, confirm: bool = True):
+    confirm: bool = True):
     if confirm:
         if not click.confirm('Ready to proceed?', default=True):
             logger.info('That\'s all right. Bye!')
@@ -197,17 +222,19 @@ def do_encrypt(input: Union[str, Path], output: Union[str, Path],
     for i, file in enumerate(files):
         output_file = output_path / get_encrypted_name(file)
         output_file.parent.mkdir(exist_ok=True, parents=True)
-        if skip_existing and output_file.exists():
-            logger.info(f'Skipped {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
-            logger.debug(f'File {file.name} has been skipped, {total-i-1} out of {total} left...')
-            continue
-        content = read_content(input_path / file)
-        encrypted_content = encrypt(content, keys)
-        output_file = output_path / get_encrypted_name(file)
+        if output_file.exists():
+            output_md5sum, _ = parse_encrypted_file(output_file, keys)
+            input_md5sum = calc_md5sum(read_content(input_path / file))
+            if input_md5sum == output_md5sum:
+                logger.info(f'Skipped {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
+                logger.debug(f'File {file.name} has been skipped, {total-i-1} out of {total} left...')
+                continue
+            else:
+                output_file.unlink()
+        encrypted_content = encrypt_file(input_path / file, keys)
         write_content(output_file, encrypted_content)
         if double_check:
-            encrypted_content = read_content(output_file)
-            if content != decrypt(encrypted_content, keys):
+            if content != decrypt_file(output_file, keys):
                 logger.error(f'Double-check for "{file.name}" was unsuccessful...')
                 sys.exit(1)
             else:
@@ -222,13 +249,11 @@ def do_encrypt_wrapper(args):
         input=args.input,
         output=args.output,
         keyfile=args.keyfile,
-        double_check=args.double_check,
-        skip_existing=args.skip_existing)
+        double_check=args.double_check)
 
 
 def do_decrypt(input: Union[str, Path], output: Union[str, Path],
-    keyfile: Union[str, Path], skip_existing: bool,
-    confirm: bool = True):
+    keyfile: Union[str, Path], confirm: bool = True):
     if confirm:
         if not click.confirm('Ready to proceed?', default=True):
             logger.info('That\'s all right. Bye!')
@@ -260,12 +285,16 @@ def do_decrypt(input: Union[str, Path], output: Union[str, Path],
     for i, file in enumerate(files):
         output_file = output_path / get_decrypted_name(file)
         output_file.parent.mkdir(exist_ok=True, parents=True)
-        if skip_existing and output_file.exists():
-            logger.info(f'Skipped {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
-            logger.debug(f'File {file.name} has been skipped, {total-i-1} out of {total} left...')
-            continue
-        content = read_content(input_path / file)
-        content = decrypt(content, keys)
+        if output_file.exists():
+            input_md5sum, _ = parse_encrypted_file(input_path / file, keys)
+            output_md5sum = calc_md5sum(read_content(output_file))
+            if input_md5sum == output_md5sum:
+                logger.info(f'Skipped {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
+                logger.debug(f'File {file.name} has been skipped, {total-i-1} out of {total} left...')
+                continue
+            else:
+                output_file.unlink()
+        content = decrypt_file(input_path / file, keys)
         write_content(output_file, content)
         logger.info(f'Decrypted {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
         logger.debug(f'File {file.name} has been decrypted, {total-i-1} out of {total} left...')
@@ -274,9 +303,7 @@ def do_decrypt(input: Union[str, Path], output: Union[str, Path],
 def do_decrypt_wrapper(args):
     do_decrypt(
         input=args.input,
-        output=args.output,
-        keyfile=args.keyfile,
-        skip_existing=args.skip_existing)
+        keyfile=args.keyfile)
 
 
 def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
@@ -289,15 +316,10 @@ def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
     logger.debug(f'unencrypted    = "{unencrypted}"')
     logger.debug(f'encrypted      = "{encrypted}"')
     logger.debug(f'keyfile        = "{keyfile}"')
+
     unencrypted_path = Path(unencrypted)
-    if not unencrypted_path.exists():
-        logger.error(f'Unencrypted input folder/file does not exist, exiting...')
-        sys.exit(1)
     encrypted_path = Path(encrypted)
-    if not encrypted_path.exists():
-        logger.error(f'Encrypted input folder/file does not exist, exiting...')
-        sys.exit(1)
-    keys = load_keys(keyfile)
+
     if unencrypted_path.is_file():
         if not encrypted_path.is_file():
             logger.error('Encrypted input is a folder, while unencrypted input is a file, exiting...')
@@ -328,14 +350,14 @@ def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
         if unencrypted_file not in unencrypted_files:
             logger.error(f'There is a file that exists in encrypted files, but unencrypted version is missing: {file}')
             sys.exit(1)
+    keys = load_keys(keyfile)
     total = len(unencrypted_files)
     logger.info(f'Checking {total} file(s)...')
     for i, file in enumerate(unencrypted_files):
         unencrypted_file = unencrypted_path / file
         encrypted_file = encrypted_path / get_encrypted_name(file)
         content_unencrypted = read_content(unencrypted_file)
-        content_encrypted = read_content(encrypted_file)
-        content_decrypted = decrypt(content_encrypted, keys)
+        content_decrypted = decrypt_file(encrypted_file, keys)
         if content_unencrypted != content_decrypted:
             logger.error(f'Unencrypted content is different from encrypted: {file}')
         logger.info(f'Checked {100 * (i+1) / total :.2f}% [{total-i-1}/{total} left]...\r')
@@ -397,7 +419,6 @@ def do_test(args):
         output=folder / 'encrypted_folder',
         keyfile=folder / 'keys' / '1.key',
         double_check=args.double_check,
-        skip_existing=False,
         confirm=False)
     do_check(
         unencrypted=folder / 'unencrypted',
@@ -408,7 +429,6 @@ def do_test(args):
         input=folder / 'encrypted_folder',
         output=folder / 'decrypted_folder',
         keyfile=folder / 'keys' / '1.key',
-        skip_existing=False,
         confirm=False)
     if gold_text != read_content(folder / 'decrypted_folder' / 'texts' / 'text.txt'):
         logger.error(f'There is a problem of encrypting the folder: text...')
@@ -439,7 +459,6 @@ def do_test(args):
         output=folder / 'encrypted_files',
         keyfile=folder / 'keys' / '2.key',
         double_check=args.double_check,
-        skip_existing=False,
         confirm=False)
     do_check(
         unencrypted=folder / 'unencrypted' / 'texts' / 'text.txt',
@@ -450,14 +469,12 @@ def do_test(args):
         input=folder / 'encrypted_files' / 'text.txt.scp',
         output=folder / 'decrypted_files',
         keyfile=folder / 'keys' / '2.key',
-        skip_existing=False,
         confirm=False)
     do_encrypt(
         input=folder / 'unencrypted' / 'plots' / 'sin.png',
         output=folder / 'encrypted_files',
         keyfile=folder / 'keys' / '3.key',
         double_check=args.double_check,
-        skip_existing=False,
         confirm=False)
     do_check(
         unencrypted=folder / 'unencrypted' / 'plots' / 'sin.png',
@@ -468,14 +485,12 @@ def do_test(args):
         input=folder / 'encrypted_files' / 'sin.png.scp',
         output=folder / 'decrypted_files',
         keyfile=folder / 'keys' / '3.key',
-        skip_existing=False,
         confirm=False)
     do_encrypt(
         input=folder / 'unencrypted' / 'plots' / 'cos.png',
         output=folder / 'encrypted_files',
         keyfile=folder / 'keys' / '4.key',
         double_check=args.double_check,
-        skip_existing=False,
         confirm=False)
     do_check(
         unencrypted=folder / 'unencrypted' / 'plots' / 'cos.png',
@@ -486,7 +501,6 @@ def do_test(args):
         input=folder / 'encrypted_files' / 'cos.png.scp',
         output=folder / 'decrypted_files',
         keyfile=folder / 'keys' / '4.key',
-        skip_existing=False,
         confirm=False)
     if gold_text != read_content(folder / 'decrypted_files' / 'text.txt'):
         logger.error(f'There is a problem of encrypting the file: text...')
@@ -525,8 +539,6 @@ if __name__ == '__main__':
                            '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
     parser_encrypt.add_argument('-dc', '--double_check', action='store_true',
                             help='double-check the encryption')
-    parser_encrypt.add_argument('-s', '--skip_existing', action='store_true',
-                            help='skip files if their encrypted version already exist')
     parser_encrypt.set_defaults(func=do_encrypt_wrapper)
 
     parser_decrypt = subparsers.add_parser('decrypt', help='decrypt file or folder')
@@ -538,8 +550,6 @@ if __name__ == '__main__':
                             help='path to the key file. Example of key file content: ' +
                            '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
                            '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
-    parser_decrypt.add_argument('-s', '--skip_existing', action='store_true',
-                            help='skip files if their decrypted version already exist')
     parser_decrypt.set_defaults(func=do_decrypt_wrapper)
 
     parser_test = subparsers.add_parser('test', help='test this script')

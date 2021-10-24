@@ -297,13 +297,12 @@ def get_encrypted_relative_to(enc_path: Path, unenc_path: Path,
     sys.exit(1)
 
 
-# Redo
 def confirm_action(action_name, files_new, files_check, files_remove):
     action_name_capitalized = action_name.capitalize()
     res = click.prompt(f'There are {len(files_new)} files to {action_name},\n' +
             f'  {len(files_check)} files to check, and\n' +
             f'  {len(files_remove)} files to remove.\nReady to proceed?\n' +
-            f'  [Y]es [n]o [r]eview',
+            f'  [Y]es [n]o [r]eview (using "less")',
             show_choices=False,
             show_default=False,
             default='y',
@@ -370,7 +369,7 @@ def collect_files(enc_root: Path, unenc_root: Path, keys: List[Dict], encrypted_
         encrypted_only=files_encrypted_only)
 
 
-def do_encrypt(input: Union[str, Path], output: Union[str, Path],
+def encrypt(input: Union[str, Path], output: Union[str, Path],
                keyfile: Union[str, Path], double_check: bool, sync: bool,
                encrypted_dirnames: bool, confirm: bool = True):
     logger.info('Starting to encrypt...')
@@ -418,9 +417,9 @@ def do_encrypt(input: Union[str, Path], output: Union[str, Path],
 
     if confirm:
         confirm_action(action_name='encrypt',
-            files_new=files_new,
+            files_new=[file.unenc_path for file in files_new],
             files_check=files_check,
-            files_remove=files_remove)
+            files_remove=[file.enc_path for file in files_remove])
 
     total = len(files_new) + len(files_check) + len(files_remove)
     logger.info(f'Processing {total} file(s)...')
@@ -479,8 +478,8 @@ def do_encrypt(input: Union[str, Path], output: Union[str, Path],
     logger.info('Encryption completed!')
 
 
-def do_encrypt_wrapper(args):
-    do_encrypt(
+def encrypt_wrapper(args):
+    encrypt(
         input=args.input,
         output=args.output,
         keyfile=args.keyfile,
@@ -489,7 +488,7 @@ def do_encrypt_wrapper(args):
         sync=args.sync)
 
 
-def do_decrypt(input: Union[str, Path], output: Union[str, Path],
+def decrypt(input: Union[str, Path], output: Union[str, Path],
         keyfile: Union[str, Path], sync: bool,
         encrypted_dirnames: bool, confirm: bool = True):
     logger.info('Starting to decrypt...')
@@ -535,9 +534,9 @@ def do_decrypt(input: Union[str, Path], output: Union[str, Path],
 
     if confirm:
         confirm_action(action_name='decrypt',
-            files_new=files_new,
+            files_new=[file.unenc_path for file in files_new],
             files_check=files_check,
-            files_remove=files_remove)
+            files_remove=[file.unenc_path for file in files_remove])
 
     total = len(files_new) + len(files_check) + len(files_remove)
     logger.info(f'Processing {total} file(s)...')
@@ -582,8 +581,8 @@ def do_decrypt(input: Union[str, Path], output: Union[str, Path],
     logger.info('Decryption completed!')
 
 
-def do_decrypt_wrapper(args):
-    do_decrypt(
+def decrypt_wrapper(args):
+    decrypt(
         input=args.input,
         output=args.output,
         keyfile=args.keyfile,
@@ -591,7 +590,7 @@ def do_decrypt_wrapper(args):
         sync=args.sync)
 
 
-def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
+def check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
              keyfile: Union[str, Path], encrypted_dirnames: bool = True, confirm: bool = True):
     if confirm:
         if not click.prompt('Ready to proceed?\n[Y]es [n]o',
@@ -669,15 +668,15 @@ def do_check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
     logger.info('Checking completed!')
 
 
-def do_check_wrapper(args):
-    do_check(
+def check_wrapper(args):
+    check(
         unencrypted=args.unencrypted,
         encrypted=args.encrypted,
         keyfile=args.keyfile,
         encrypted_dirnames=~args.no_encrypt_dirnames)
 
 
-def do_test(keep: bool, double_check: bool):
+def test(keep: bool, double_check: bool):
     confirm = False
     i = 0
     while Path(f'./test_{i}').exists():
@@ -722,21 +721,21 @@ def do_test(keep: bool, double_check: bool):
             {'alg': 'BLOWFISH', 'pass': '{salt0}', 'salts': 1}]
     with open(test_path / 'keys' / '1.key', 'w') as f:
         f.write(json.dumps(keys))
-    do_encrypt(
+    encrypt(
         input=test_path / 'unencrypted',
         output=test_path / 'encrypted_dir',
         keyfile=test_path / 'keys' / '1.key',
-        double_check=args.double_check,
+        double_check=double_check,
         sync=True,
         encrypted_dirnames=True,
         confirm=confirm)
-    do_check(
+    check(
         unencrypted=test_path / 'unencrypted',
         encrypted=test_path / 'encrypted_dir',
         keyfile=test_path / 'keys' / '1.key',
         encrypted_dirnames=True,
         confirm=confirm)
-    do_decrypt(
+    decrypt(
         input=test_path / 'encrypted_dir',
         output=test_path / 'decrypted_dir',
         keyfile=test_path / 'keys' / '1.key',
@@ -767,7 +766,7 @@ def do_test(keep: bool, double_check: bool):
             {'alg': 'AES256', 'pass': 'prefixsuffix', 'salts': 0}]
     with open(test_path / 'keys' / '4.key', 'w') as f:
         f.write(json.dumps(keys))
-    do_encrypt(
+    encrypt(
         input=test_path/'unencrypted'/'texts'/'text.txt',
         output=test_path/'encrypted_files'/'text.txt',
         keyfile=test_path/'keys'/'2.key',
@@ -775,19 +774,19 @@ def do_test(keep: bool, double_check: bool):
         sync=False,
         encrypted_dirnames=True,
         confirm=confirm)
-    do_check(
+    check(
         unencrypted=test_path / 'unencrypted' / 'texts' / 'text.txt',
         encrypted=test_path / 'encrypted_files' / 'text.txt',
         keyfile=test_path / 'keys' / '2.key',
         confirm=confirm)
-    do_decrypt(
+    decrypt(
         input=test_path / 'encrypted_files' / 'text.txt',
         output=test_path / 'decrypted_files'/'text.txt',
         keyfile=test_path / 'keys' / '2.key',
         sync=False,
         encrypted_dirnames=True,
         confirm=confirm)
-    do_encrypt(
+    encrypt(
         input=test_path / 'unencrypted' / 'plots' / 'sin.png',
         output=test_path / 'encrypted_files'/'sin.png',
         keyfile=test_path / 'keys' / '3.key',
@@ -795,19 +794,19 @@ def do_test(keep: bool, double_check: bool):
         sync=False,
         encrypted_dirnames=True,
         confirm=confirm)
-    do_check(
+    check(
         unencrypted=test_path / 'unencrypted' / 'plots' / 'sin.png',
         encrypted=test_path / 'encrypted_files' / 'sin.png',
         keyfile=test_path / 'keys' / '3.key',
         confirm=confirm)
-    do_decrypt(
+    decrypt(
         input=test_path / 'encrypted_files' / 'sin.png',
         output=test_path / 'decrypted_files'/'sin.png',
         keyfile=test_path / 'keys' / '3.key',
         sync=False,
         encrypted_dirnames=True,
         confirm=confirm)
-    do_encrypt(
+    encrypt(
         input=test_path / 'unencrypted' / 'plots' / 'cos.png',
         output=test_path / 'encrypted_files'/'cos.png',
         keyfile=test_path / 'keys' / '4.key',
@@ -815,12 +814,12 @@ def do_test(keep: bool, double_check: bool):
         sync=False,
         encrypted_dirnames=True,
         confirm=confirm)
-    do_check(
+    check(
         unencrypted=test_path / 'unencrypted' / 'plots' / 'cos.png',
         encrypted=test_path / 'encrypted_files' / 'cos.png',
         keyfile=test_path / 'keys' / '4.key',
         confirm=confirm)
-    do_decrypt(
+    decrypt(
         input=test_path / 'encrypted_files' / 'cos.png',
         output=test_path / 'decrypted_files' / 'cos.png',
         keyfile=test_path / 'keys' / '4.key',
@@ -843,12 +842,12 @@ def do_test(keep: bool, double_check: bool):
     logger.info('All the tests have successfully passed.')
 
 
-def do_test_wrapper(args):
-    do_test(keep=args.keep,
+def test_wrapper(args):
+    test(keep=args.keep,
             double_check=args.double_check)
 
 
-if __name__ == '__main__':
+def main():
     FORMAT = '[{filename}:{lineno} - {funcName}(): {levelname}] {message}'
     parser = argparse.ArgumentParser()
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -873,7 +872,7 @@ if __name__ == '__main__':
                             help='synchronize output to input')
     parser_encrypt.add_argument('-dc', '--double_check', action='store_true',
                             help='double-check the encryption')
-    parser_encrypt.set_defaults(func=do_encrypt_wrapper)
+    parser_encrypt.set_defaults(func=encrypt_wrapper)
 
     parser_decrypt = subparsers.add_parser('decrypt', help='decrypt file or directory')
     parser_decrypt.add_argument('input', type=str,
@@ -886,14 +885,14 @@ if __name__ == '__main__':
                            '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
     parser_decrypt.add_argument('-s', '--sync', action='store_true',
                             help='synchronize output to input')
-    parser_decrypt.set_defaults(func=do_decrypt_wrapper)
+    parser_decrypt.set_defaults(func=decrypt_wrapper)
 
     parser_test = subparsers.add_parser('test', help='test this script')
     parser_test.add_argument('-k', '--keep', action='store_true',
                             help='keep the test directory and files afterwards')
     parser_test.add_argument('-dc', '--double_check', action='store_true',
                             help='double-check the encryption')
-    parser_test.set_defaults(func=do_test_wrapper)
+    parser_test.set_defaults(func=test_wrapper)
 
     parser_check = subparsers.add_parser('check', help='check the encryption')
     parser_check.add_argument('unencrypted', type=str,
@@ -904,7 +903,7 @@ if __name__ == '__main__':
                             help='path to the key file. Example of key file content: ' +
                            '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
                            '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
-    parser_check.set_defaults(func=do_check_wrapper)
+    parser_check.set_defaults(func=check_wrapper)
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=FORMAT, style='{')
     if args.print_arguments:

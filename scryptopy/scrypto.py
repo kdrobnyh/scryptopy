@@ -49,14 +49,25 @@ salt_len_max = 30
 md5sum_length = 32
 fname_len = 32
 key_json_schema = {
-    "type": "array",
-    "items": {
-        "type": "object",
-        "properties": {
-            "alg": {"type": "string"},
-            "pass": {"type": "string"},
-            "salts": {"type": "number"},
-        }
+    "type": "object",
+    "properties": {
+        "keys": {
+            "type": "array",
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "alg": {"type": "string"},
+                        "pass": {"type": "string"},
+                        "salts": {"type": "number"},
+                    }
+                }
+            }
+        },
+        "data": {"type": "number"},
+        "fname": {"type": "number"},
+        "dirname": {"type": "number"}
     }
 }
 
@@ -85,7 +96,7 @@ def write_bytes(fname: Path, data: bytes):
         f.write(data)
 
 
-def load_keys(keyfile: Union[str, Path]) -> List[Dict]:
+def load_keys(keyfile: Union[str, Path]) -> Dict[str, List[Dict]]:
     keyfile_path = Path(keyfile)
     if not keyfile_path.exists():
         logger.error(f'Key file "{keyfile_path}" does not exist, exiting...')
@@ -94,9 +105,18 @@ def load_keys(keyfile: Union[str, Path]) -> List[Dict]:
         try:
             keys_loaded = json.load(json_file)
             jsonschema.validate(instance=keys_loaded, schema=key_json_schema)
-            return keys_loaded
+            keys = keys_loaded["keys"]
+            l = len(keys)
+            keys_dict = {}
+            for purpose in ['data', 'fname', 'dirname']:
+                if keys_loaded[purpose] < 0 or keys_loaded[purpose] >= l:
+                    logger.error(f'Key file "{keyfile_path}" has an error: wrong key index, exiting...')
+                    sys.exit(1)
+                keys_dict[purpose] = keys[keys_loaded[purpose]]
+            return keys_dict
         except Exception as e:
             logger.error(f'An error occurred while loading the keys from "{keyfile_path}"...')
+            logger.error(e)
             sys.exit(1)
 
 
@@ -159,11 +179,11 @@ def encrypt_content(content: Dict[str, bytes], keys: List[Dict]) -> bytes:
         if t == 'MD5':
             data_temp = content[t].encode('utf-8')
         elif t == 'fname':
-            data_temp = encrypt_bytes(content[t].encode('utf-8'), keys)
+            data_temp = encrypt_bytes(content[t].encode('utf-8'), keys['fname'])
         elif t == 'dirname':
-            data_temp = encrypt_bytes(content[t].encode('utf-8'), keys)
+            data_temp = encrypt_bytes(content[t].encode('utf-8'), keys['dirname'])
         elif t == 'data':
-            data_temp = encrypt_bytes(content[t], keys)
+            data_temp = encrypt_bytes(content[t], keys['data'])
         else:
             logger.error(f'Content type {t} is not recognized, should be one of these:')
             logger.error(f'\t"{content_types.keys()}", exiting...')
@@ -234,11 +254,11 @@ def decrypt_file(fname: Path, keys: List[Dict],
         if t == 'MD5':
             content[t] = data_temp.decode('utf-8')
         elif t == 'fname':
-            content[t] = decrypt_bytes(data_temp, keys).decode('utf-8')
+            content[t] = decrypt_bytes(data_temp, keys['fname']).decode('utf-8')
         elif t == 'dirname':
-            content[t] = decrypt_bytes(data_temp, keys).decode('utf-8')
+            content[t] = decrypt_bytes(data_temp, keys['dirname']).decode('utf-8')
         elif t == 'data':
-            content[t] = decrypt_bytes(data_temp, keys)
+            content[t] = decrypt_bytes(data_temp, keys['data'])
         else:
             logger.error(f'Content type {t} is not recognized, should be one of these:')
             logger.error(f'\t"{content_types.keys()}", exiting...')
@@ -646,7 +666,7 @@ def check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
 
     with click.progressbar(
             length=total,
-            label='Checking',
+            label='Checking  ',
             item_show_func=lambda x: x) as bar:
         for file in files_both:
             unencrypted_file = unencrypted_path / file.unenc_path
@@ -674,177 +694,6 @@ def check_wrapper(args):
         encrypted=args.encrypted,
         keyfile=args.keyfile,
         encrypted_dirnames=~args.no_encrypt_dirnames)
-
-
-def test(keep: bool, double_check: bool):
-    confirm = False
-    i = 0
-    while Path(f'./test_{i}').exists():
-        i += 1
-    test_path = Path(f'./test_{i}')
-
-    logger.info(f'Path for testing is {test_path}')
-
-    if not click.prompt('Ready to proceed?\n[Y]es [n]o',
-            type=bool, default=True, show_choices=False, show_default=False):
-        logger.info('That\'s all right. Bye!')
-        sys.exit(0)
-
-    logger.info('Starting to test...')
-    logger.debug(f'keep         = "{keep}"')
-    logger.debug(f'double_check = "{double_check}"')
-    (test_path / 'unencrypted' / 'plots').mkdir(parents=True)
-    (test_path / 'unencrypted' / 'texts').mkdir(parents=True)
-    (test_path / 'keys').mkdir(parents=True)
-    x = [v / 100.0 for v in range(1000)]
-    plt.plot(x, [sin(v) for v in x])
-    plt.savefig(test_path / 'unencrypted' / 'plots' / 'sin.png')
-    plt.close()
-    plt.plot(x, [cos(v) for v in x])
-    plt.savefig(test_path / 'unencrypted' / 'plots' / 'cos.png')
-    plt.close()
-    with open(test_path / 'unencrypted' / 'texts' / 'text.txt', 'w') as f:
-        f.write('''
-            Lorem ipsum dolor sit amet,
-            consectetur adipiscing elit,
-            sed do eiusmod tempor incididunt
-            ut labore et dolore magna aliqua.
-            ''')
-    gold_plot_sin = read_bytes(test_path / 'unencrypted' / 'plots' / 'sin.png')
-    gold_plot_cos = read_bytes(test_path / 'unencrypted' / 'plots' / 'cos.png')
-    gold_text     = read_bytes(test_path / 'unencrypted' / 'texts' / 'text.txt')
-    # Test 1
-    keys = [{'alg': '3DES', 'pass': 'some{salt0}_e{salt4}{salt1}nc_{salt2}key{salt3}', 'salts': 5},
-            {'alg': 'AES256', 'pass': 'prefix{salt0}suffix', 'salts': 1},
-            {'alg': 'CAMELLIA256', 'pass': 'some_key', 'salts': 0},
-            {'alg': 'TWOFISH', 'pass': '???{salt1}!!!', 'salts': 2},
-            {'alg': 'BLOWFISH', 'pass': '{salt0}', 'salts': 1}]
-    with open(test_path / 'keys' / '1.key', 'w') as f:
-        f.write(json.dumps(keys))
-    encrypt(
-        input=test_path / 'unencrypted',
-        output=test_path / 'encrypted_dir',
-        keyfile=test_path / 'keys' / '1.key',
-        double_check=double_check,
-        sync=True,
-        encrypted_dirnames=True,
-        confirm=confirm)
-    check(
-        unencrypted=test_path / 'unencrypted',
-        encrypted=test_path / 'encrypted_dir',
-        keyfile=test_path / 'keys' / '1.key',
-        encrypted_dirnames=True,
-        confirm=confirm)
-    decrypt(
-        input=test_path / 'encrypted_dir',
-        output=test_path / 'decrypted_dir',
-        keyfile=test_path / 'keys' / '1.key',
-        sync=True,
-        encrypted_dirnames=True,
-        confirm=confirm)
-    if gold_text != read_bytes(test_path / 'decrypted_dir' / 'texts' / 'text.txt'):
-        logger.error(f'There is a problem of encrypting the directory: text...')
-        if not keep: shutil.rmtree(test_path)
-        sys.exit(1)
-    if gold_plot_sin != read_bytes(test_path / 'decrypted_dir' / 'plots' / 'sin.png'):
-        logger.error(f'There is a problem of encrypting the directory: sin plot...')
-        if not keep: shutil.rmtree(test_path)
-        sys.exit(1)
-    if gold_plot_cos != read_bytes(test_path / 'decrypted_dir' / 'plots' / 'cos.png'):
-        logger.error(f'There is a problem of encrypting the directory: cos plot...')
-        if not keep: shutil.rmtree(test_path)
-        sys.exit(1)
-    # Test 2
-    keys = [{'alg': 'AES256', 'pass': 'prefix{salt0}suffix', 'salts': 5}]
-    with open(test_path / 'keys' / '2.key', 'w') as f:
-        f.write(json.dumps(keys))
-    keys = [{'alg': 'TWOFISH', 'pass': '???{salt1}{salt3}!!!', 'salts': 5},
-            {'alg': 'AES256', 'pass': 'prefix{salt4}suffix', 'salts': 5}]
-    with open(test_path / 'keys' / '3.key', 'w') as f:
-        f.write(json.dumps(keys))
-    keys = [{'alg': 'TWOFISH', 'pass': '{salt0}{salt3}', 'salts': 4},
-            {'alg': 'AES256', 'pass': 'prefixsuffix', 'salts': 0}]
-    with open(test_path / 'keys' / '4.key', 'w') as f:
-        f.write(json.dumps(keys))
-    encrypt(
-        input=test_path/'unencrypted'/'texts'/'text.txt',
-        output=test_path/'encrypted_files'/'text.txt',
-        keyfile=test_path/'keys'/'2.key',
-        double_check=double_check,
-        sync=False,
-        encrypted_dirnames=True,
-        confirm=confirm)
-    check(
-        unencrypted=test_path / 'unencrypted' / 'texts' / 'text.txt',
-        encrypted=test_path / 'encrypted_files' / 'text.txt',
-        keyfile=test_path / 'keys' / '2.key',
-        confirm=confirm)
-    decrypt(
-        input=test_path / 'encrypted_files' / 'text.txt',
-        output=test_path / 'decrypted_files'/'text.txt',
-        keyfile=test_path / 'keys' / '2.key',
-        sync=False,
-        encrypted_dirnames=True,
-        confirm=confirm)
-    encrypt(
-        input=test_path / 'unencrypted' / 'plots' / 'sin.png',
-        output=test_path / 'encrypted_files'/'sin.png',
-        keyfile=test_path / 'keys' / '3.key',
-        double_check=double_check,
-        sync=False,
-        encrypted_dirnames=True,
-        confirm=confirm)
-    check(
-        unencrypted=test_path / 'unencrypted' / 'plots' / 'sin.png',
-        encrypted=test_path / 'encrypted_files' / 'sin.png',
-        keyfile=test_path / 'keys' / '3.key',
-        confirm=confirm)
-    decrypt(
-        input=test_path / 'encrypted_files' / 'sin.png',
-        output=test_path / 'decrypted_files'/'sin.png',
-        keyfile=test_path / 'keys' / '3.key',
-        sync=False,
-        encrypted_dirnames=True,
-        confirm=confirm)
-    encrypt(
-        input=test_path / 'unencrypted' / 'plots' / 'cos.png',
-        output=test_path / 'encrypted_files'/'cos.png',
-        keyfile=test_path / 'keys' / '4.key',
-        double_check=double_check,
-        sync=False,
-        encrypted_dirnames=True,
-        confirm=confirm)
-    check(
-        unencrypted=test_path / 'unencrypted' / 'plots' / 'cos.png',
-        encrypted=test_path / 'encrypted_files' / 'cos.png',
-        keyfile=test_path / 'keys' / '4.key',
-        confirm=confirm)
-    decrypt(
-        input=test_path / 'encrypted_files' / 'cos.png',
-        output=test_path / 'decrypted_files' / 'cos.png',
-        keyfile=test_path / 'keys' / '4.key',
-        sync=False,
-        encrypted_dirnames=True,
-        confirm=confirm)
-    if gold_text != read_bytes(test_path / 'decrypted_files' / 'text.txt'):
-        logger.error(f'There is a problem of encrypting the file: text...')
-        if not keep: shutil.rmtree(test_path)
-        sys.exit(1)
-    if gold_plot_sin != read_bytes(test_path / 'decrypted_files' / 'sin.png'):
-        logger.error(f'There is a problem of encrypting the file: sin plot...')
-        if not keep: shutil.rmtree(test_path)
-        sys.exit(1)
-    if gold_plot_cos != read_bytes(test_path / 'decrypted_files' / 'cos.png'):
-        logger.error(f'There is a problem of encrypting the file: cos plot...')
-        if not keep: shutil.rmtree(test_path)
-        sys.exit(1)
-    if not keep: shutil.rmtree(test_path)
-    logger.info('All the tests have successfully passed.')
-
-
-def test_wrapper(args):
-    test(keep=args.keep,
-            double_check=args.double_check)
 
 
 def main():
@@ -887,13 +736,6 @@ def main():
                             help='synchronize output to input')
     parser_decrypt.set_defaults(func=decrypt_wrapper)
 
-    parser_test = subparsers.add_parser('test', help='test this script')
-    parser_test.add_argument('-k', '--keep', action='store_true',
-                            help='keep the test directory and files afterwards')
-    parser_test.add_argument('-dc', '--double_check', action='store_true',
-                            help='double-check the encryption')
-    parser_test.set_defaults(func=test_wrapper)
-
     parser_check = subparsers.add_parser('check', help='check the encryption')
     parser_check.add_argument('unencrypted', type=str,
                             help='unencrypted directory or file')
@@ -904,6 +746,7 @@ def main():
                            '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
                            '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
     parser_check.set_defaults(func=check_wrapper)
+
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format=FORMAT, style='{')
     if args.print_arguments:
@@ -912,3 +755,8 @@ def main():
         sys.exit(0)
     logging.debug(args)
     args.func(args)
+
+if __name__ == '__main__':
+    FORMAT = '[{filename}:{lineno} - {funcName}(): {levelname}] {message}'
+    logging.basicConfig(level=logging.DEBUG, format=FORMAT, style='{')
+    test(keep=False, double_check=True)

@@ -24,8 +24,6 @@ import random
 import secrets
 import gnupg
 from pathlib import Path
-from matplotlib import pyplot as plt
-from math import sin, cos
 import shutil
 import base64
 import jsonschema
@@ -36,7 +34,7 @@ import collections
 
 
 gpg = gnupg.GPG()
-logger = logging.getLogger(__file__)
+logger = logging.getLogger('scryptopy')
 gnupg_logger = logging.getLogger('gnupg')
 gnupg_logger.setLevel(logging.CRITICAL)
 findfont_logger = logging.getLogger('matplotlib.font_manager')
@@ -46,8 +44,7 @@ findfont_logger.setLevel(logging.CRITICAL)
 prefix = b'SCryptoPy'
 salt_len_min = 10
 salt_len_max = 30
-md5sum_length = 32
-fname_len = 32
+filename_len = 32
 key_json_schema = {
     "type": "object",
     "properties": {
@@ -58,22 +55,22 @@ key_json_schema = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "alg": {"type": "string"},
-                        "pass": {"type": "string"},
-                        "salts": {"type": "number"},
+                        "algorithm": {"type": "string"},
+                        "passphrase_template": {"type": "string"},
+                        "num_salts": {"type": "number"}
                     }
                 }
             }
         },
-        "data": {"type": "number"},
-        "fname": {"type": "number"},
-        "dirname": {"type": "number"}
+        "data_key_index": {"type": "number"},
+        "filename_key_index": {"type": "number"},
+        "dirname_key_index": {"type": "number"}
     }
 }
 
-content_types = {'MD5': 0,
-                 'fname': 1,
-                 'dirname': 2,
+content_types = {'filename': 0,
+                 'dirname': 1,
+                 'sha256': 254,
                  'data': 255 }
 
 content_types_back = {v: k for k, v in content_types.items()}
@@ -88,11 +85,11 @@ def read_bytes(file: Path) -> bytes:
         return f.read()
 
 
-def write_bytes(fname: Path, data: bytes):
-    if fname.exists():
-        logger.error(f'File {fname} already exists, exiting...')
+def write_bytes(filename: Path, data: bytes):
+    if filename.exists():
+        logger.error(f'File {filename} already exists, exiting...')
         sys.exit(1)
-    with open(fname, 'wb') as f:
+    with open(filename, 'wb') as f:
         f.write(data)
 
 
@@ -108,7 +105,7 @@ def load_keys(keyfile: Union[str, Path]) -> Dict[str, List[Dict]]:
             keys = keys_loaded["keys"]
             l = len(keys)
             keys_dict = {}
-            for purpose in ['data', 'fname', 'dirname']:
+            for purpose in ['data_key_index', 'filename_key_index', 'dirname_key_index']:
                 if keys_loaded[purpose] < 0 or keys_loaded[purpose] >= l:
                     logger.error(f'Key file "{keyfile_path}" has an error: wrong key index, exiting...')
                     sys.exit(1)
@@ -120,8 +117,8 @@ def load_keys(keyfile: Union[str, Path]) -> Dict[str, List[Dict]]:
             sys.exit(1)
 
 
-def generate_fname() -> str:
-    return secrets.token_urlsafe(fname_len)[:fname_len]
+def generate_filename() -> str:
+    return secrets.token_urlsafe(filename_len)[:filename_len]
 
 
 def generate_salt() -> str:
@@ -129,19 +126,19 @@ def generate_salt() -> str:
     return secrets.token_urlsafe(length)[:length]
 
 
-def calc_md5sum(data: bytes) -> str:
-    return hashlib.md5(data).hexdigest()
+def calc_sha256sum(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def encrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
     for key in keys:
-        alg = key['alg']
-        nsalts = key['salts']
-        if (nsalts > 255):
-            logger.error(f'Number of salts should be less than 256, but it\'s {nsalts} (stage {i}/{len(keys)})...')
+        algorithm = key['algorithm']
+        num_salts = key['num_salts']
+        if (num_salts > 255):
+            logger.error(f'Number of salts should be less than 256, but it\'s {num_salts} (stage {i}/{len(keys)})...')
             sys.exit(1)
-        salts = {f'salt{j}': generate_salt() for j in range(nsalts)}
-        passphrase = key['pass'].format(**salts)
+        salts = {f'salt{j}': generate_salt() for j in range(num_salts)}
+        passphrase = key['passphrase_template'].format(**salts)
         if passphrase.find('{') != -1:
             logger.error(f'Passphrase = "{passphrase}"')
             logger.error('Passphrase should not contain "\{" characters, exiting...')
@@ -150,12 +147,12 @@ def encrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
             None,
             passphrase=passphrase,
             armor=False,
-            symmetric=alg)
+            symmetric=algorithm)
         data = b''
-        for j in range(nsalts):
+        for j in range(num_salts):
             data += salts[f'salt{j}'].encode('utf8') + b'\0'
         if not temp.ok:
-            logger.error(f'Cannot encrypt "{file}" with "{alg}": "{temp.status}" (stage {i}/{len(keys)})...')
+            logger.error(f'Cannot encrypt "{file}" with "{algorithm}": "{temp.status}" (stage {i}/{len(keys)})...')
             sys.exit(1)
         data += temp.data
     return data
@@ -163,7 +160,7 @@ def encrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
 
 def encrypt_content(content: Dict[str, bytes], keys: List[Dict]) -> bytes:
     if 'data' in content:
-        content['MD5'] = calc_md5sum(content['data'])
+        content['sha256'] = calc_sha256sum(content['data'])
     data = prefix
     wrong_types = [t for t in content.keys() if t not in content_types.keys()]
     for t in wrong_types:
@@ -176,14 +173,14 @@ def encrypt_content(content: Dict[str, bytes], keys: List[Dict]) -> bytes:
             continue
         data += bytes((content_types[t],))
         data_temp = b''
-        if t == 'MD5':
+        if t == 'sha256':
             data_temp = content[t].encode('utf-8')
-        elif t == 'fname':
-            data_temp = encrypt_bytes(content[t].encode('utf-8'), keys['fname'])
+        elif t == 'filename':
+            data_temp = encrypt_bytes(content[t].encode('utf-8'), keys['filename_key_index'])
         elif t == 'dirname':
-            data_temp = encrypt_bytes(content[t].encode('utf-8'), keys['dirname'])
+            data_temp = encrypt_bytes(content[t].encode('utf-8'), keys['dirname_key_index'])
         elif t == 'data':
-            data_temp = encrypt_bytes(content[t], keys['data'])
+            data_temp = encrypt_bytes(content[t], keys['data_key_index'])
         else:
             logger.error(f'Content type {t} is not recognized, should be one of these:')
             logger.error(f'\t"{content_types.keys()}", exiting...')
@@ -200,27 +197,27 @@ def encrypt_content(content: Dict[str, bytes], keys: List[Dict]) -> bytes:
 
 def decrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
     for key in keys[::-1]:
-        alg = key['alg']
+        algorithm = key['algorithm']
         salts = {}
-        for j in range(key['salts']):
+        for j in range(key['num_salts']):
             pos = data.find(b'\0', salt_len_min, salt_len_max)
             if pos == -1:
                 logger.error(f'Cannot decrypt "{file}": cannot find the salt (stage {i}/{len(keys)})...')
                 sys.exit(1)
             salts[f'salt{j}'] = data[:pos].decode('utf8')
             data = data[pos+1:]
-        passphrase = key['pass'].format(**salts)
+        passphrase = key['passphrase_template'].format(**salts)
         temp = gpg.decrypt(data, passphrase=passphrase)
         if not temp.ok:
-            logger.error(f'Cannot decrypt "{file}" with "{alg}": "{temp.status}" (stage {i}/{len(keys)})...')
+            logger.error(f'Cannot decrypt "{file}" with "{algorithm}": "{temp.status}" (stage {i}/{len(keys)})...')
             sys.exit(1)
         data = temp.data
     return data
 
 
-def decrypt_file(fname: Path, keys: List[Dict],
+def decrypt_file(filename: Path, keys: List[Dict],
                  needed_content_types: List[str] = content_types.keys()) -> Dict[str, bytes]:
-    data = read_bytes(fname)
+    data = read_bytes(filename)
     if not data.startswith(prefix):
         logger.error(f'Cannot decrypt "{file}": wrong file content...')
         sys.exit(1)
@@ -251,14 +248,14 @@ def decrypt_file(fname: Path, keys: List[Dict],
         data = data[length_total:]
         if t not in needed_content_types:
             continue
-        if t == 'MD5':
+        if t == 'sha256':
             content[t] = data_temp.decode('utf-8')
-        elif t == 'fname':
-            content[t] = decrypt_bytes(data_temp, keys['fname']).decode('utf-8')
+        elif t == 'filename':
+            content[t] = decrypt_bytes(data_temp, keys['filename_key_index']).decode('utf-8')
         elif t == 'dirname':
-            content[t] = decrypt_bytes(data_temp, keys['dirname']).decode('utf-8')
+            content[t] = decrypt_bytes(data_temp, keys['dirname_key_index']).decode('utf-8')
         elif t == 'data':
-            content[t] = decrypt_bytes(data_temp, keys['data'])
+            content[t] = decrypt_bytes(data_temp, keys['data_key_index'])
         else:
             logger.error(f'Content type {t} is not recognized, should be one of these:')
             logger.error(f'\t"{content_types.keys()}", exiting...')
@@ -277,7 +274,7 @@ def get_unencrypted_relative_to(path: Path, root: Path) -> List[Path]:
     sys.exit(1)
 
 
-EncryptedFname = collections.namedtuple('EncryptedFname',
+EncryptedFilename = collections.namedtuple('EncryptedFilename',
     ['unenc_path', 'enc_path'])
 
 
@@ -288,16 +285,16 @@ def get_encrypted_relative_to(enc_path: Path, unenc_path: Path,
     if full_enc_path.is_file():
         if encrypted_dirnames and full_enc_path.name == '__index__':
             return ([], {})
-        unenc_fname = decrypt_file(fname=full_enc_path,
-                             keys=keys, needed_content_types=['fname'])['fname']
-        unenc_path = unenc_path.parent / unenc_fname
-        return ([EncryptedFname(enc_path=enc_path, unenc_path=unenc_path)],
+        unenc_filename = decrypt_file(filename=full_enc_path,
+                             keys=keys, needed_content_types=['filename'])['filename']
+        unenc_path = unenc_path.parent / unenc_filename
+        return ([EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path)],
                 {unenc_path: enc_path})
     if full_enc_path.is_dir():
         if encrypted_dirnames and enc_path != Path('.'):
-            fname = decrypt_file(fname=full_enc_path/'__index__',
+            filename = decrypt_file(filename=full_enc_path/'__index__',
                                  keys=keys, needed_content_types=['dirname'])['dirname']
-            unenc_path = unenc_path.parent / fname
+            unenc_path = unenc_path.parent / filename
         result = [get_encrypted_relative_to(
                         enc_path=x.relative_to(root),
                         unenc_path=unenc_path/x.name,
@@ -308,7 +305,7 @@ def get_encrypted_relative_to(enc_path: Path, unenc_path: Path,
         enc_map = {unenc_path: enc_path}
         files = []
         if enc_path != Path('.'):
-            files = [EncryptedFname(enc_path=enc_path, unenc_path=unenc_path)]
+            files = [EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path)]
         for x in result:
             enc_map.update(x[1])
             files.extend(x[0])
@@ -374,12 +371,12 @@ def collect_files(enc_root: Path, unenc_root: Path, keys: List[Dict], encrypted_
     files_encrypted_unenc_paths = [file.unenc_path for file in files_encrypted]
     files_unencrypted_only = []
     for file in (file for file in files_unencrypted if file not in files_encrypted_unenc_paths):
-        enc_path = enc_map[file.parent] / generate_fname()
+        enc_path = enc_map[file.parent] / generate_filename()
         if (unenc_root / file).is_dir():
             if not encrypted_dirnames:
                 enc_path = file
             enc_map[file] = enc_path
-        files_unencrypted_only.append(EncryptedFname(enc_path=enc_path, unenc_path=file))
+        files_unencrypted_only.append(EncryptedFilename(enc_path=enc_path, unenc_path=file))
     files_both = [enc_file for enc_file in files_encrypted
                   if enc_file.unenc_path in files_unencrypted]
     files_encrypted_only = [enc_file for enc_file in files_encrypted if enc_file.unenc_path not in files_unencrypted]
@@ -412,7 +409,7 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
         files_new = []
         files_check = []
         files_remove = []
-        file = EncryptedFname(unenc_path=input_path.name, enc_path=output_path.name)
+        file = EncryptedFilename(unenc_path=input_path.name, enc_path=output_path.name)
         if output_path.exists():
             if not output_path.is_file():
                 logger.error('Output is not a regular file, but is expected to be, exiting...')
@@ -451,17 +448,18 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
         for file in files_check:
             input_file = input_path / file.unencrypted
             output_file = output_path / file.encrypted
-            output_md5sum = decrypt_file(fname=output_file,
-                                         keys=keys, needed_content_types=['MD5'])['MD5']
-            input_md5sum = calc_md5sum(read_bytes(input_file))
-            if input_md5sum == output_md5sum:
+            output_sha256sum = decrypt_file(filename=output_file,
+                                            keys=keys, 
+                                            needed_content_types=['sha256'])['sha256']
+            input_sha256sum = calc_sha256sum(read_bytes(input_file))
+            if input_sha256sum == output_sha256sum:
                 bar.update(1, f'{input_file.name} skipped')
             else:
                 if sync:
                     output_file.unlink()
                     bar.update(0, f'{output_file.name} removed')
-                    files_new.append(EncryptedFname(unenc_path=file.unencrypted,
-                                                    enc_path=None))
+                    files_new.append(EncryptedFilename(unenc_path=file.unencrypted,
+                                                       enc_path=None))
                 else:
                     logger.error(f'{file.unencrypted} is different from {file.encrypted}, exiting...')
                     sys.exit(1)
@@ -472,9 +470,9 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
                 # output_file.parent.mkdir(exist_ok=True, parents=True)
                 data = read_bytes(input_file)
                 encrypted_content = encrypt_content(
-                    {'fname': input_file.name,
+                    {'filename': input_file.name,
                      'data': data}, keys)
-                write_bytes(fname=output_file,
+                write_bytes(filename=output_file,
                             data=encrypted_content)
                 if double_check:
                     content = read_bytes(input_file)
@@ -488,7 +486,7 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
             else:
                 output_file.mkdir()
                 encrypted_content = encrypt_content({'dirname': input_file.name}, keys=keys)
-                write_bytes(fname=output_file/'__index__',
+                write_bytes(filename=output_file/'__index__',
                             data=encrypted_content)
                 bar.update(1, f'{input_file.name} encrypted')
         for file in files_remove[::-1]:
@@ -504,7 +502,7 @@ def encrypt_wrapper(args):
         output=args.output,
         keyfile=args.keyfile,
         double_check=args.double_check,
-        encrypted_dirnames=~args.no_encrypt_dirnames,
+        encrypted_dirnames=not args.no_encrypt_dirnames,
         sync=args.sync)
 
 
@@ -529,7 +527,7 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
         files_new = []
         files_check = []
         files_remove = []
-        file = EncryptedFname(enc_path=input_path.name, unenc_path=output_path.name)
+        file = EncryptedFilename(enc_path=input_path.name, unenc_path=output_path.name)
         if output_path.exists():
             if not output_path.is_file():
                 logger.error('Output is a file, but expected to be a directory, exiting...')
@@ -568,11 +566,11 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
         for file in files_check:
             input_file = input_path / file.enc_path
             output_file = output_path / file.unenc_path
-            input_md5sum, _ = decrypt_file(fname=input_file,
+            input_sha256sum, _ = decrypt_file(filename=input_file,
                                            keys=keys,
-                                           needed_content_types=['MD5'])['MD5']
-            output_md5sum = calc_md5sum(read_bytes(output_file))
-            if input_md5sum == output_md5sum:
+                                           needed_content_types=['sha256'])['sha256']
+            output_sha256sum = calc_sha256sum(read_bytes(output_file))
+            if input_sha256sum == output_sha256sum:
                 bar.update(1, f'{input_file.name} skipped')
             else:
                 if sync:
@@ -586,10 +584,10 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
             input_file = input_path / file.enc_path
             output_file = output_path / file.unenc_path
             if input_file.is_file():
-                decrypted_bytes = decrypt_file(fname=input_file,
+                decrypted_bytes = decrypt_file(filename=input_file,
                                                keys=keys,
                                                needed_content_types=['data'])['data']
-                write_bytes(fname=output_file, data=decrypted_bytes)
+                write_bytes(filename=output_file, data=decrypted_bytes)
                 bar.update(1, f'{output_file.name} decrypted')
             else:
                 output_file.mkdir()
@@ -606,7 +604,7 @@ def decrypt_wrapper(args):
         input=args.input,
         output=args.output,
         keyfile=args.keyfile,
-        encrypted_dirnames=~no_encrypt_dirnames,
+        encrypted_dirnames=not args.no_encrypt_dirnames,
         sync=args.sync)
 
 
@@ -638,7 +636,7 @@ def check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
             logger.error('Unencrypted path leads to a regular file, while encrypted does not, exiting...')
             sys.exit(1)
         files = AnalyzedFiles(unencrypted_only=[], encrypted_only=[],
-                              both=[EncryptedFname(unenc_path=unencrypted_path.name, enc_path=encrypted_path.name)])
+                              both=[EncryptedFilename(unenc_path=unencrypted_path.name, enc_path=encrypted_path.name)])
         unencrypted_path = unencrypted_path.parent
         encrypted_path = encrypted_path.parent
     else:
@@ -672,7 +670,7 @@ def check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
             unencrypted_file = unencrypted_path / file.unenc_path
             encrypted_file = encrypted_path / file.enc_path
             content_unencrypted = read_bytes(unencrypted_file)
-            content_decrypted = decrypt_file(fname=encrypted_file,
+            content_decrypted = decrypt_file(filename=encrypted_file,
                                              keys=keys,
                                              needed_content_types=['data'])['data']
             if content_unencrypted != content_decrypted:
@@ -710,13 +708,11 @@ def main():
 
     parser_encrypt = subparsers.add_parser('encrypt', help='encrypt file or directory')
     parser_encrypt.add_argument('input', type=str,
-                            help='input directory or file to encrypt')
+                            help='input file or directory to encrypt')
     parser_encrypt.add_argument('output', type=str,
-                            help='output directory to place the encrypted files')
+                            help='output file or directory to place the encrypted files')
     parser_encrypt.add_argument('keyfile', type=str,
-                            help='path to the key file. Example of key file content: ' +
-                           '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
-                           '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
+                            help='path to the key file')
     parser_encrypt.add_argument('-s', '--sync', action='store_true',
                             help='synchronize output to input')
     parser_encrypt.add_argument('-dc', '--double_check', action='store_true',
@@ -725,26 +721,22 @@ def main():
 
     parser_decrypt = subparsers.add_parser('decrypt', help='decrypt file or directory')
     parser_decrypt.add_argument('input', type=str,
-                            help='input directory or file to decrypt')
+                            help='input file or directory to decrypt')
     parser_decrypt.add_argument('output', type=str,
-                            help='output directory to place the decrypted files')
+                            help='output file or directory to place the decrypted files')
     parser_decrypt.add_argument('keyfile', type=str,
-                            help='path to the key file. Example of key file content: ' +
-                           '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
-                           '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
+                            help='path to the key file')
     parser_decrypt.add_argument('-s', '--sync', action='store_true',
                             help='synchronize output to input')
     parser_decrypt.set_defaults(func=decrypt_wrapper)
 
     parser_check = subparsers.add_parser('check', help='check the encryption')
     parser_check.add_argument('unencrypted', type=str,
-                            help='unencrypted directory or file')
+                            help='unencrypted file or directory')
     parser_check.add_argument('encrypted', type=str,
-                            help='encrypted directory or file')
+                            help='encrypted file or directory')
     parser_check.add_argument('keyfile', type=str,
-                            help='path to the key file. Example of key file content: ' +
-                           '[{"alg": "aes256", "pass": "some{salt0}_enc{salt3}_key", "salts": 5}, ' +
-                           '{"alg": "blowfish", "pass": "prefix{salt0}suffix", "salts": 1}]')
+                            help='path to the key file')
     parser_check.set_defaults(func=check_wrapper)
 
     args = parser.parse_args()
@@ -757,6 +749,4 @@ def main():
     args.func(args)
 
 if __name__ == '__main__':
-    FORMAT = '[{filename}:{lineno} - {funcName}(): {levelname}] {message}'
-    logging.basicConfig(level=logging.DEBUG, format=FORMAT, style='{')
-    test(keep=False, double_check=True)
+    main()

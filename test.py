@@ -96,13 +96,13 @@ class FileEncDecCheckTestCase(unittest.TestCase):
     def test_lorem_ipsum(self):
         keys = {
             'keys': [
-                [{'alg': 'AES256', 'pass': 'prefix{salt0}suffix', 'salts': 5}],
-                [{'alg': 'AES256', 'pass': 'prefix{salt1}suffix', 'salts': 5}],
-                [{'alg': 'AES256', 'pass': 'prefix{salt3}suffix', 'salts': 5}]
+                [{'algorithm': 'AES256', 'passphrase_template': 'prefix{salt0}suffix', 'num_salts': 5}],
+                [{'algorithm': 'AES256', 'passphrase_template': 'prefix{salt1}suffix', 'num_salts': 5}],
+                [{'algorithm': 'AES256', 'passphrase_template': 'prefix{salt3}suffix', 'num_salts': 5}]
             ],
-            'data': 0,
-            'fname': 1,
-            'dirname': 2
+            'data_key_index': 0,
+            'filename_key_index': 1,
+            'dirname_key_index': 2
         }
         self.__test_file('lorem.txt', write_lorem_ipsum, keys)
 
@@ -110,31 +110,31 @@ class FileEncDecCheckTestCase(unittest.TestCase):
         keys = {
             'keys': [
                 [
-                    {'alg': 'TWOFISH', 'pass': '???{salt1}{salt3}!!!', 'salts': 5},
-                    {'alg': 'AES256', 'pass': 'prefix{salt4}suffix', 'salts': 5}
+                    {'algorithm': 'TWOFISH', 'passphrase_template': '???{salt1}{salt3}!!!', 'num_salts': 5},
+                    {'algorithm': 'AES256', 'passphrase_template': 'prefix{salt4}suffix', 'num_salts': 5}
                 ],
-                [{'alg': 'AES256', 'pass': 'prefixsuffix', 'salts': 5}],
-                [{'alg': 'AES256', 'pass': 'prefix{salt3}suffix', 'salts': 5}]
+                [{'algorithm': 'AES256', 'passphrase_template': 'prefixsuffix', 'num_salts': 5}],
+                [{'algorithm': 'AES256', 'passphrase_template': 'prefix{salt3}suffix', 'num_salts': 5}]
             ],
-            'data': 0,
-            'fname': 2,
-            'dirname': 1
+            'data_key_index': 0,
+            'filename_key_index': 2,
+            'dirname_key_index': 1
         }
         self.__test_file('spam.csv', write_csv_spam, keys)
 
     def test_csv_dict(self):
         keys = {
             'keys': [
-                [{'alg': 'AES256', 'pass': '{salt4}', 'salts': 5}],
+                [{'algorithm': 'AES256', 'passphrase_template': '{salt4}', 'num_salts': 5}],
                 [
-                    {'alg': 'TWOFISH', 'pass': '{salt0}{salt3}', 'salts': 4},
-                    {'alg': 'AES256', 'pass': 'prefixsuffix', 'salts': 0}
+                    {'algorithm': 'TWOFISH', 'passphrase_template': '{salt0}{salt3}', 'num_salts': 4},
+                    {'algorithm': 'AES256', 'passphrase_template': 'prefixsuffix', 'num_salts': 0}
                 ],
-                [{'alg': 'AES256', 'pass': 'prefix{salt3}suffix', 'salts': 5}]
+                [{'algorithm': 'AES256', 'passphrase_template': 'prefix{salt3}suffix', 'num_salts': 5}]
             ],
-            'data': 1,
-            'fname': 0,
-            'dirname': 1
+            'data_key_index': 1,
+            'filename_key_index': 0,
+            'dirname_key_index': 1
         }
         self.__test_file('dict.csv', write_csv_dict, keys)
 
@@ -206,16 +206,16 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
         keys = {
             'keys': [
                 [
-                    {'alg': '3DES', 'pass': 'some{salt0}_e{salt4}{salt1}nc_{salt2}key{salt3}', 'salts': 5},
-                    {'alg': 'AES256', 'pass': 'prefix{salt0}suffix', 'salts': 1},
-                    {'alg': 'CAMELLIA256', 'pass': 'some_key', 'salts': 0},
-                    {'alg': 'TWOFISH', 'pass': '???{salt1}!!!', 'salts': 2},
-                    {'alg': 'BLOWFISH', 'pass': '{salt0}', 'salts': 1}
+                    {'algorithm': '3DES', 'passphrase_template': 'some{salt0}_e{salt4}{salt1}nc_{salt2}key{salt3}', 'num_salts': 5},
+                    {'algorithm': 'AES256', 'passphrase_template': 'prefix{salt0}suffix', 'num_salts': 1},
+                    {'algorithm': 'CAMELLIA256', 'passphrase_template': 'some_key', 'num_salts': 0},
+                    {'algorithm': 'TWOFISH', 'passphrase_template': '???{salt1}!!!', 'num_salts': 2},
+                    {'algorithm': 'BLOWFISH', 'passphrase_template': '{salt0}', 'num_salts': 1}
                 ]
             ],
-            'data': 0,
-            'fname': 0,
-            'dirname': 0
+            'data_key_index': 0,
+            'filename_key_index': 0,
+            'dirname_key_index': 0
         }
         self.__test_directory(dname, keys, encrypted_dirnames)
         shutil.rmtree(unencrypted_path)

@@ -20,7 +20,6 @@ import json
 import argparse
 import itertools
 import logging
-import random
 import secrets
 import gnupg
 from pathlib import Path
@@ -85,11 +84,11 @@ def read_bytes(file: Path) -> bytes:
         return f.read()
 
 
-def write_bytes(filename: Path, data: bytes):
-    if filename.exists():
-        logger.error(f'File {filename} already exists, exiting...')
+def write_bytes(file: Path, data: bytes):
+    if file.exists():
+        logger.error(f'File {file} already exists, exiting...')
         sys.exit(1)
-    with open(filename, 'wb') as f:
+    with open(file, 'wb') as f:
         f.write(data)
 
 
@@ -122,7 +121,7 @@ def generate_filename() -> str:
 
 
 def generate_salt() -> str:
-    length = random.randrange(salt_len_min, salt_len_max)
+    length = salt_len_min + secrets.randbelow(salt_len_max - salt_len_min)
     return secrets.token_urlsafe(length)[:length]
 
 
@@ -131,7 +130,8 @@ def calc_sha256sum(data: bytes) -> str:
 
 
 def encrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
-    for key in keys:
+    for i in range(len(keys)):
+        key = keys[i]
         algorithm = key['algorithm']
         num_salts = key['num_salts']
         if (num_salts > 255):
@@ -152,7 +152,7 @@ def encrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
         for j in range(num_salts):
             data += salts[f'salt{j}'].encode('utf8') + b'\0'
         if not temp.ok:
-            logger.error(f'Cannot encrypt "{file}" with "{algorithm}": "{temp.status}" (stage {i}/{len(keys)})...')
+            logger.error(f'Cannot encrypt file with "{algorithm}": "{temp.status}" (stage {i}/{len(keys)})...')
             sys.exit(1)
         data += temp.data
     return data
@@ -196,20 +196,22 @@ def encrypt_content(content: Dict[str, bytes], keys: List[Dict]) -> bytes:
 
 
 def decrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
-    for key in keys[::-1]:
+    for i in reversed(range(len(keys))):
+        key = keys[i]
+        # for i, key in enumerate(keys)[::-1]:
         algorithm = key['algorithm']
         salts = {}
         for j in range(key['num_salts']):
             pos = data.find(b'\0', salt_len_min, salt_len_max)
             if pos == -1:
-                logger.error(f'Cannot decrypt "{file}": cannot find the salt (stage {i}/{len(keys)})...')
+                logger.error(f'Cannot decrypt: cannot find the salt (stage {i}/{len(keys)})...')
                 sys.exit(1)
             salts[f'salt{j}'] = data[:pos].decode('utf8')
             data = data[pos+1:]
         passphrase = key['passphrase_template'].format(**salts)
         temp = gpg.decrypt(data, passphrase=passphrase)
         if not temp.ok:
-            logger.error(f'Cannot decrypt "{file}" with "{algorithm}": "{temp.status}" (stage {i}/{len(keys)})...')
+            logger.error(f'Cannot decrypt with "{algorithm}": "{temp.status}" (stage {i}/{len(keys)})...')
             sys.exit(1)
         data = temp.data
     return data
@@ -219,7 +221,7 @@ def decrypt_file(filename: Path, keys: List[Dict],
                  needed_content_types: List[str] = content_types.keys()) -> Dict[str, bytes]:
     data = read_bytes(filename)
     if not data.startswith(prefix):
-        logger.error(f'Cannot decrypt "{file}": wrong file content...')
+        logger.error(f'Cannot decrypt "{filename}": wrong file content...')
         sys.exit(1)
     data = data[len(prefix):]
     content = {}
@@ -235,14 +237,14 @@ def decrypt_file(filename: Path, keys: List[Dict],
         length_current = 128
         while length_current >= 128:
             if len(data) == 0:
-                logger.error(f'Not enough data to decrypt, exiting...')
+                logger.error(f'Cannot decrypt "{filename}": not enough data to decrypt, exiting...')
                 sys.exit(1)
             length_total = length_total * 128 + (length_current - 128)
             length_current = data[0]
             data = data[1:]
         length_total = length_total * 128 + length_current
         if len(data) < length_total:
-            logger.error(f'Not enough data to decrypt, exiting...')
+            logger.error(f'Cannot decrypt "{filename}": not enough data to decrypt, exiting...')
             sys.exit(1)
         data_temp = data[:length_total]
         data = data[length_total:]
@@ -430,7 +432,8 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
         files_new = files.unencrypted_only
         files_check = [file for file in files.both if (input_path/file.unenc_path).is_file()]
         files_remove = files.encrypted_only
-        if not sync: files_remove = []
+        if not sync:
+            files_remove = []
 
     if confirm:
         confirm_action(action_name='encrypt',
@@ -449,7 +452,7 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
             input_file = input_path / file.unencrypted
             output_file = output_path / file.encrypted
             output_sha256sum = decrypt_file(filename=output_file,
-                                            keys=keys, 
+                                            keys=keys,
                                             needed_content_types=['sha256'])['sha256']
             input_sha256sum = calc_sha256sum(read_bytes(input_file))
             if input_sha256sum == output_sha256sum:
@@ -472,7 +475,7 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
                 encrypted_content = encrypt_content(
                     {'filename': input_file.name,
                      'data': data}, keys)
-                write_bytes(filename=output_file,
+                write_bytes(file=output_file,
                             data=encrypted_content)
                 if double_check:
                     content = read_bytes(input_file)
@@ -486,7 +489,7 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
             else:
                 output_file.mkdir()
                 encrypted_content = encrypt_content({'dirname': input_file.name}, keys=keys)
-                write_bytes(filename=output_file/'__index__',
+                write_bytes(file=output_file/'__index__',
                             data=encrypted_content)
                 bar.update(1, f'{input_file.name} encrypted')
         for file in files_remove[::-1]:
@@ -548,7 +551,8 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
         files_remove = files.unencrypted_only
         files_check = [file for file in files.both if (input_path/file.unenc_path).is_file()]
         files_new = files.encrypted_only
-        if not sync: files_remove = []
+        if not sync:
+            files_remove = []
 
     if confirm:
         confirm_action(action_name='decrypt',
@@ -587,7 +591,7 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
                 decrypted_bytes = decrypt_file(filename=input_file,
                                                keys=keys,
                                                needed_content_types=['data'])['data']
-                write_bytes(filename=output_file, data=decrypted_bytes)
+                write_bytes(file=output_file, data=decrypted_bytes)
                 bar.update(1, f'{output_file.name} decrypted')
             else:
                 output_file.mkdir()

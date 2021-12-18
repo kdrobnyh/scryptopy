@@ -1,5 +1,7 @@
 # SCryptoPy
 
+[![CI Status](https://github.com/kdrobnyh/scryptopy/actions/workflows/ci.yml/badge.svg)](https://github.com/kdrobnyh/scryptopy/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/kdrobnyh/scryptopy/branch/main/graph/badge.svg?token=GTEAV3X2Z0)](https://codecov.io/gh/kdrobnyh/scryptopy)
 [![PyPI](https://img.shields.io/pypi/v/scryptopy.svg)](https://pypi.org/project/scryptopy/)
 [![license](http://img.shields.io/badge/license-GNU-blue.svg)](https://raw.githubusercontent.com/kdrobnyh/scryptopy/main/LICENSE)
 

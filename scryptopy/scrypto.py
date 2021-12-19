@@ -218,7 +218,7 @@ def decrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
 
 
 def decrypt_file(filename: Path, keys: List[Dict],
-                 needed_content_types: List[str] = content_types.keys()) -> Dict[str, bytes]:
+                 needed_content_types: List[str] = []) -> Dict[str, bytes]:
     data = read_bytes(filename)
     if not data.startswith(prefix):
         logger.error(f'Cannot decrypt "{filename}": wrong file content...')
@@ -248,7 +248,7 @@ def decrypt_file(filename: Path, keys: List[Dict],
             sys.exit(1)
         data_temp = data[:length_total]
         data = data[length_total:]
-        if t not in needed_content_types:
+        if needed_content_types and (t not in needed_content_types):
             continue
         if t == 'sha256':
             content[t] = data_temp.decode('utf-8')
@@ -262,6 +262,10 @@ def decrypt_file(filename: Path, keys: List[Dict],
             logger.error(f'Content type {t} is not recognized, should be one of these:')
             logger.error(f'\t"{content_types.keys()}", exiting...')
             sys.exit(1)
+    missing_contents = [t for t in needed_content_types if t not in content]
+    if missing_contents:
+        logger.error(f'Cannot decrypt "{filename}": content types "{missing_contents}" are missing, exiting...')
+        sys.exit(1)
     return content
 
 
@@ -288,15 +292,21 @@ def get_encrypted_relative_to(enc_path: Path, unenc_path: Path,
         if encrypted_dirnames and full_enc_path.name == '__index__':
             return ([], {})
         unenc_filename = decrypt_file(filename=full_enc_path,
-                             keys=keys, needed_content_types=['filename'])['filename']
+                                      keys=keys, needed_content_types=['filename'])['filename']
         unenc_path = unenc_path.parent / unenc_filename
         return ([EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path)],
                 {unenc_path: enc_path})
     if full_enc_path.is_dir():
-        if encrypted_dirnames and enc_path != Path('.'):
-            filename = decrypt_file(filename=full_enc_path/'__index__',
-                                 keys=keys, needed_content_types=['dirname'])['dirname']
-            unenc_path = unenc_path.parent / filename
+        files = []
+        if enc_path != Path('.'):
+            if encrypted_dirnames:
+                dirname = decrypt_file(filename=full_enc_path/'__index__',
+                                       keys=keys, needed_content_types=['dirname'])['dirname']
+            else:
+                dirname = unenc_path.name
+            unenc_path = unenc_path.parent / dirname
+            files = [EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path)]
+        enc_map = {unenc_path: enc_path}
         result = [get_encrypted_relative_to(
                         enc_path=x.relative_to(root),
                         unenc_path=unenc_path/x.name,
@@ -304,10 +314,6 @@ def get_encrypted_relative_to(enc_path: Path, unenc_path: Path,
                         keys=keys,
                         encrypted_dirnames=encrypted_dirnames)
                      for x in sorted(full_enc_path.iterdir())]
-        enc_map = {unenc_path: enc_path}
-        files = []
-        if enc_path != Path('.'):
-            files = [EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path)]
         for x in result:
             enc_map.update(x[1])
             files.extend(x[0])
@@ -357,7 +363,6 @@ AnalyzedFiles = collections.namedtuple('AnalyzedFiles',
 
 
 def collect_files(enc_root: Path, unenc_root: Path, keys: List[Dict], encrypted_dirnames):
-    encrypted_dirnames=True
     if enc_root.is_file():
         logger.error(f'"{enc_root}" should be a directory, not file, exiting...')
         sys.exit(1)
@@ -488,9 +493,10 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
                     bar.update(1, f'{input_file.name} encrypted')
             else:
                 output_file.mkdir()
-                encrypted_content = encrypt_content({'dirname': input_file.name}, keys=keys)
-                write_bytes(file=output_file/'__index__',
-                            data=encrypted_content)
+                if encrypted_dirnames:
+                    encrypted_content = encrypt_content({'dirname': input_file.name}, keys=keys)
+                    write_bytes(file=output_file/'__index__',
+                                data=encrypted_content)
                 bar.update(1, f'{input_file.name} encrypted')
         for file in files_remove[::-1]:
             output_file = output_path / file.enc_path
@@ -649,7 +655,6 @@ def check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
             sys.exit(1)
         files = collect_files(unenc_root=unencrypted_path, enc_root=encrypted_path,
                               keys=keys, encrypted_dirnames=encrypted_dirnames)
-
 
     is_ok = (len(files.unencrypted_only) == 0) and (len(files.encrypted_only) == 0)
 

@@ -140,7 +140,6 @@ def encrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
         salts = {f'salt{j}': generate_salt() for j in range(num_salts)}
         passphrase = key['passphrase_template'].format(**salts)
         if passphrase.find('{') != -1:
-            logger.error(f'Passphrase_template = "{key["passphrase_template"]}"')
             logger.error('Passphrase should not contain "\{" characters, exiting...')
             sys.exit(1)
         temp = gpg.encrypt(data,

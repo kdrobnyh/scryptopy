@@ -385,7 +385,8 @@ def collect_files(enc_root: Path, unenc_root: Path, keys: List[Dict], encrypted_
         files_unencrypted_only.append(EncryptedFilename(enc_path=enc_path, unenc_path=file))
     files_both = [enc_file for enc_file in files_encrypted
                   if enc_file.unenc_path in files_unencrypted]
-    files_encrypted_only = [enc_file for enc_file in files_encrypted if enc_file.unenc_path not in files_unencrypted]
+    files_encrypted_only = [enc_file for enc_file in files_encrypted
+                            if enc_file.unenc_path not in files_unencrypted]
     return AnalyzedFiles(
         unencrypted_only=files_unencrypted_only,
         both=files_both,
@@ -453,8 +454,8 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
         label='Encrypting',
         item_show_func=lambda x: x) as bar:
         for file in files_check:
-            input_file = input_path / file.unencrypted
-            output_file = output_path / file.encrypted
+            input_file = input_path / file.unenc_path
+            output_file = output_path / file.enc_path
             output_sha256sum = decrypt_file(filename=output_file,
                                             keys=keys,
                                             needed_content_types=['sha256'])['sha256']
@@ -465,16 +466,15 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
                 if sync:
                     output_file.unlink()
                     bar.update(0, f'{output_file.name} removed')
-                    files_new.append(EncryptedFilename(unenc_path=file.unencrypted,
+                    files_new.append(EncryptedFilename(unenc_path=file.unenc_path,
                                                        enc_path=None))
                 else:
-                    logger.error(f'{file.unencrypted} is different from {file.encrypted}, exiting...')
+                    logger.error(f'{file.unenc_path} is different from {file.enc_path}, exiting...')
                     sys.exit(1)
         for file in files_new:
             input_file = input_path / file.unenc_path
             output_file = output_path / file.enc_path
             if input_file.is_file():
-                # output_file.parent.mkdir(exist_ok=True, parents=True)
                 data = read_bytes(input_file)
                 encrypted_content = encrypt_content(
                     {'filename': input_file.name,
@@ -499,7 +499,13 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
                 bar.update(1, f'{input_file.name} encrypted')
         for file in files_remove[::-1]:
             output_file = output_path / file.enc_path
-            output_file.unlink()
+            if output_file.is_file():
+                output_file.unlink()
+            else:
+                index_file = output_file / '__index__'
+                if encrypted_dirnames and index_file.exists():
+                    index_file.unlink()
+                output_file.rmdir()
             bar.update(1, f'{output_file.name} removed')
     logger.info('Encryption completed!')
 
@@ -554,7 +560,7 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
         files = collect_files(enc_root=input_path, unenc_root=output_path,
                               keys=keys, encrypted_dirnames=encrypted_dirnames)
         files_remove = files.unencrypted_only
-        files_check = [file for file in files.both if (input_path/file.unenc_path).is_file()]
+        files_check = [file for file in files.both if (input_path/file.enc_path).is_file()]
         files_new = files.encrypted_only
         if not sync:
             files_remove = []
@@ -575,7 +581,7 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
         for file in files_check:
             input_file = input_path / file.enc_path
             output_file = output_path / file.unenc_path
-            input_sha256sum, _ = decrypt_file(filename=input_file,
+            input_sha256sum = decrypt_file(filename=input_file,
                                            keys=keys,
                                            needed_content_types=['sha256'])['sha256']
             output_sha256sum = calc_sha256sum(read_bytes(output_file))
@@ -602,8 +608,11 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
                 output_file.mkdir()
                 bar.update(1, f'{output_file.name} created')
         for file in files_remove[::-1]:
-            output_file = output_path / file
-            output_file.unlink()
+            output_file = output_path / file.unenc_path
+            if output_file.is_file():
+                output_file.unlink()
+            else:
+                output_file.rmdir()
             bar.update(1, f'{output_file.name} removed')
     logger.info('Decryption completed!')
 

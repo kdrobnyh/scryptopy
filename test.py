@@ -141,15 +141,11 @@ class FileEncDecCheckTestCase(unittest.TestCase):
 
 class DirectoryEncDecCheckTestCase(unittest.TestCase):
 
-    def __test_directory(self, dname, keys, encrypted_dirnames):
+    def __test_directory(self, dname, encrypted_dirnames):
         unencrypted_path = self.temp_dir_path / 'unencrypted' / dname
         encrypted_path = self.temp_dir_path / 'encrypted' / dname
         decrypted_path = self.temp_dir_path / 'decrypted' / dname
         keys_path = self.temp_dir_path / 'keys' / dname
-
-        with open(keys_path, 'w') as f:
-            f.write(json.dumps(keys))
-
         scryptopy.encrypt(
             input=unencrypted_path,
             output=encrypted_path,
@@ -195,15 +191,8 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def __test_subfolders(self, dname, encrypted_dirnames):
-        unencrypted_path = self.temp_dir_path / 'unencrypted' / dname
-        unencrypted_path.mkdir()
-        (unencrypted_path / 'texts').mkdir()
-        write_lorem_ipsum(unencrypted_path / 'texts' / 'lorem.txt')
-        (unencrypted_path / 'CSVs').mkdir()
-        write_csv_spam(unencrypted_path / 'CSVs' / 'spam.csv')
-        write_csv_dict(unencrypted_path / 'CSVs' / 'dict.csv')
-        keys = {
+    def __generate_keys(self):
+        return {
             'keys': [
                 [
                     {'algorithm': '3DES', 'passphrase_template': 'some{salt0}_e{salt4}{salt1}nc_{salt2}key{salt3}', 'num_salts': 5},
@@ -217,16 +206,80 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
             'filename_key_index': 0,
             'dirname_key_index': 0
         }
-        self.__test_directory(dname, keys, encrypted_dirnames)
+
+    def __test_subfolders(self, dname, encrypted_dirnames):
+        unencrypted_path = self.temp_dir_path / 'unencrypted' / dname
+        unencrypted_path.mkdir()
+        (unencrypted_path / 'texts').mkdir()
+        write_lorem_ipsum(unencrypted_path / 'texts' / 'lorem.txt')
+        (unencrypted_path / 'CSVs').mkdir()
+        write_csv_spam(unencrypted_path / 'CSVs' / 'spam.csv')
+        write_csv_dict(unencrypted_path / 'CSVs' / 'dict.csv')
+        keys_path = self.temp_dir_path / 'keys' / dname
+        with open(keys_path, 'w') as f:
+            f.write(json.dumps(self.__generate_keys()))
+        self.__test_directory(dname, encrypted_dirnames)
+        shutil.rmtree(unencrypted_path)
+
+    def __test_subfolders_partial(self, dname, encrypted_dirnames):
+        unencrypted_path = self.temp_dir_path / 'unencrypted' / dname
+        encrypted_path = self.temp_dir_path / 'encrypted' / dname
+        decrypted_path = self.temp_dir_path / 'decrypted' / dname
+        unencrypted_path.mkdir()
+        write_lorem_ipsum(unencrypted_path / 'lorem1.txt')
+        write_lorem_ipsum(unencrypted_path / 'lorem3.txt')
+        (unencrypted_path / 'texts').mkdir()
+        write_lorem_ipsum(unencrypted_path / 'texts' / 'lorem1.txt')
+        write_lorem_ipsum(unencrypted_path / 'texts' / 'lorem3.txt')
+        (unencrypted_path / 'CSVs').mkdir()
+        (unencrypted_path / 'CSVs' / '1').mkdir()
+        write_csv_spam(unencrypted_path / 'CSVs' / '1' / 'spam.csv')
+        write_csv_dict(unencrypted_path / 'CSVs' / '1' /'dict.csv')
+        (unencrypted_path / 'CSVs' / '3').mkdir()
+        write_csv_spam(unencrypted_path / 'CSVs' / '3' /'spam.csv')
+        write_csv_dict(unencrypted_path / 'CSVs' / '3' /'dict.csv')
+        keys_path = self.temp_dir_path / 'keys' / dname
+        with open(keys_path, 'w') as f:
+            f.write(json.dumps(self.__generate_keys()))
+        scryptopy.encrypt(
+            input=unencrypted_path,
+            output=encrypted_path,
+            keyfile=keys_path,
+            double_check=True,
+            sync=True,
+            encrypted_dirnames=encrypted_dirnames,
+            confirm=False)
+        scryptopy.decrypt(
+            input=encrypted_path,
+            output=decrypted_path,
+            keyfile=keys_path,
+            sync=True,
+            encrypted_dirnames=encrypted_dirnames,
+            confirm=False)
+        write_lorem_ipsum(unencrypted_path / 'lorem2.txt')
+        write_lorem_ipsum(unencrypted_path / 'texts' / 'lorem2.txt')
+        (unencrypted_path / 'CSVs' / '2').mkdir()
+        write_csv_spam(unencrypted_path / 'CSVs' / '2' /'spam.csv')
+        write_csv_dict(unencrypted_path / 'CSVs' / '2' /'dict.csv')
+        (unencrypted_path / 'lorem3.txt').unlink()
+        (unencrypted_path / 'texts' / 'lorem3.txt').unlink()
+        shutil.rmtree(unencrypted_path / 'CSVs' / '3')
+        self.__test_directory(dname, encrypted_dirnames)
         shutil.rmtree(unencrypted_path)
 
 
-    def test_subfolders_encrypted_dirnames(self):
-        self.__test_subfolders('encrypted_dirnames', encrypted_dirnames=True)
+    def test_subfolders_full_encrypted_dirnames(self):
+        self.__test_subfolders('full_encrypted_dirnames', encrypted_dirnames=True)
 
 
-    def test_subfolders_not_encrypted_dirnames(self):
-        self.__test_subfolders('not_encrypted_dirnames', encrypted_dirnames=False)
+    def test_subfolders_full_not_encrypted_dirnames(self):
+        self.__test_subfolders('full_not_encrypted_dirnames', encrypted_dirnames=False)
+
+    def test_subfolders_partial_encrypted_dirnames(self):
+        self.__test_subfolders_partial('partial_encrypted_dirnames', encrypted_dirnames=True)
+
+    def test_subfolders_partial_not_encrypted_dirnames(self):
+        self.__test_subfolders_partial('partial_not_encrypted_dirnames', encrypted_dirnames=False)
 
 
 if __name__ == '__main__':

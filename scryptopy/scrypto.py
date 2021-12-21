@@ -57,14 +57,23 @@ key_json_schema = {
                         "algorithm": {"type": "string"},
                         "passphrase_template": {"type": "string"},
                         "num_salts": {"type": "number"}
-                    }
+                    },
+                    "required": ["algorithm",
+                                 "passphrase_template",
+                                 "num_salts"],
+                    "additionalProperties": False
                 }
             }
         },
         "data_key_index": {"type": "number"},
         "filename_key_index": {"type": "number"},
         "dirname_key_index": {"type": "number"}
-    }
+    },
+    "required": ["keys",
+                 "data_key_index",
+                 "filename_key_index",
+                 "dirname_key_index"],
+    "additionalProperties": False
 }
 
 content_types = {'filename': 0,

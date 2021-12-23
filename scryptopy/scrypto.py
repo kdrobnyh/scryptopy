@@ -277,12 +277,12 @@ def decrypt_file(filename: Path, keys: List[Dict],
     return content
 
 
-def get_unencrypted_relative_to(path: Path, root: Path) -> List[Path]:
+def get_files_relative_to(path: Path, root: Path) -> List[Path]:
     full_path = root / path
     if full_path.is_file():
         return [path]
     if full_path.is_dir():
-        subpaths = list(itertools.chain(*[get_unencrypted_relative_to(x.relative_to(root), root) for x in sorted(full_path.iterdir())]))
+        subpaths = list(itertools.chain(*[get_files_relative_to(x.relative_to(root), root) for x in sorted(full_path.iterdir())]))
         return ([path] if path != Path('.') else []) + subpaths
     logger.error(f'Path "{full_path}" is not file or directory, exiting...')
     sys.exit(1)
@@ -290,44 +290,6 @@ def get_unencrypted_relative_to(path: Path, root: Path) -> List[Path]:
 
 EncryptedFilename = collections.namedtuple('EncryptedFilename',
     ['unenc_path', 'enc_path'])
-
-
-def get_encrypted_relative_to(enc_path: Path, unenc_path: Path,
-                              root: Path, keys: List[Dict],
-                              encrypted_dirnames: bool) -> Tuple[List[Tuple[Path, Path]], Dict[Path, Path]]:
-    full_enc_path = root / enc_path
-    if full_enc_path.is_file():
-        if encrypted_dirnames and full_enc_path.name == '__index__':
-            return ([], {})
-        unenc_filename = decrypt_file(filename=full_enc_path,
-                                      keys=keys, needed_content_types=['filename'])['filename']
-        unenc_path = unenc_path.parent / unenc_filename
-        return ([EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path)],
-                {unenc_path: enc_path})
-    if full_enc_path.is_dir():
-        files = []
-        if enc_path != Path('.'):
-            if encrypted_dirnames:
-                dirname = decrypt_file(filename=full_enc_path/'__index__',
-                                       keys=keys, needed_content_types=['dirname'])['dirname']
-            else:
-                dirname = unenc_path.name
-            unenc_path = unenc_path.parent / dirname
-            files = [EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path)]
-        enc_map = {unenc_path: enc_path}
-        result = [get_encrypted_relative_to(
-                        enc_path=x.relative_to(root),
-                        unenc_path=unenc_path/x.name,
-                        root=root,
-                        keys=keys,
-                        encrypted_dirnames=encrypted_dirnames)
-                     for x in sorted(full_enc_path.iterdir())]
-        for x in result:
-            enc_map.update(x[1])
-            files.extend(x[0])
-        return (files, enc_map)
-    logger.error(f'Path "{enc_path}" is not file or directory, exiting...')
-    sys.exit(1)
 
 
 def confirm_action(action_name, files_new, files_check, files_remove):
@@ -377,20 +339,46 @@ def collect_files(enc_root: Path, unenc_root: Path, keys: List[Dict], encrypted_
     if unenc_root.is_file():
         logger.error(f'"{unenc_root}" should be a directory, not file, exiting...')
         sys.exit(1)
-    files_unencrypted = get_unencrypted_relative_to(path=Path('.'), root=unenc_root)
-    files_encrypted, enc_map = get_encrypted_relative_to(enc_path=Path('.'),
-                                                         unenc_path=Path('.'),
-                                                         root=enc_root,
-                                                         keys=keys,
-                                                         encrypted_dirnames=encrypted_dirnames)
+    files_unencrypted = get_files_relative_to(path=Path('.'), root=unenc_root)
+    files_encrypted_raw = get_files_relative_to(path=Path('.'), root=enc_root)
+    files_encrypted = []
+    enc_map = {Path('.'): Path('.')}
+    if files_encrypted_raw:
+        with click.progressbar(
+            length=len(files_encrypted_raw),
+            label='Decrypting filenames') as bar:
+            for enc_path in files_encrypted_raw:
+                full_enc_path = enc_root / enc_path
+                if full_enc_path.is_file():
+                    if (not encrypted_dirnames) or (full_enc_path.name != '__index__'):
+                        unenc_filename = decrypt_file(filename=full_enc_path,
+                                                      keys=keys, needed_content_types=['filename'])['filename']
+                        unenc_path = enc_map[enc_path.parent] / unenc_filename
+                        files_encrypted.append(EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path))
+                        enc_map[enc_path] = unenc_path
+                elif full_enc_path.is_dir():
+                    if enc_path != Path('.'):
+                        if encrypted_dirnames:
+                            dirname = decrypt_file(filename=full_enc_path/'__index__',
+                                                   keys=keys, needed_content_types=['dirname'])['dirname']
+                        else:
+                            dirname = enc_path.name
+                        unenc_path = enc_map[enc_path.parent] / dirname
+                        files_encrypted.append(EncryptedFilename(enc_path=enc_path, unenc_path=unenc_path))
+                        enc_map[enc_path] = unenc_path
+                else:
+                    logger.error(f'Path "{enc_path}" is not file or directory, exiting...')
+                    sys.exit(1)
+                bar.update(1)
     files_encrypted_unenc_paths = [file.unenc_path for file in files_encrypted]
     files_unencrypted_only = []
+    enc_map_back = {v: k for k, v in enc_map.items()}
     for file in (file for file in files_unencrypted if file not in files_encrypted_unenc_paths):
-        enc_path = enc_map[file.parent] / generate_filename()
+        enc_path = enc_map_back[file.parent] / generate_filename()
         if (unenc_root / file).is_dir():
             if not encrypted_dirnames:
                 enc_path = file
-            enc_map[file] = enc_path
+            enc_map_back[file] = enc_path
         files_unencrypted_only.append(EncryptedFilename(enc_path=enc_path, unenc_path=file))
     files_both = [enc_file for enc_file in files_encrypted
                   if enc_file.unenc_path in files_unencrypted]

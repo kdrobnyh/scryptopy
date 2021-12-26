@@ -8,4 +8,4 @@ omit = ["test.py", "*__init__.py"]
 
 [tool.coverage.report]
 omit = ["test.py", "*__init__.py"]
-exclude_lines = ["if __name__ == '__main__'", "def main", "def (.+)_wrapper", 'def confirm_action']
+exclude_lines = ["if __name__ == '__main__'", "def main", "def (.+)_wrapper"]

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import scryptopy
 import tempfile
 from pathlib import Path
@@ -88,7 +89,6 @@ class FileEncDecCheckTestCase(unittest.TestCase):
         (self.temp_dir_path / 'encrypted').mkdir()
         (self.temp_dir_path / 'decrypted').mkdir()
         (self.temp_dir_path / 'keys').mkdir()
-        print(self.temp_dir)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -146,30 +146,33 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
         encrypted_path = self.temp_dir_path / 'encrypted' / dname
         decrypted_path = self.temp_dir_path / 'decrypted' / dname
         keys_path = self.temp_dir_path / 'keys' / dname
-        scryptopy.encrypt(
-            input=unencrypted_path,
-            output=encrypted_path,
-            keyfile=keys_path,
-            double_check=True,
-            sync=True,
-            encrypted_dirnames=encrypted_dirnames,
-            confirm=False)
-
-        scryptopy.check(
-            unencrypted=unencrypted_path,
-            encrypted=encrypted_path,
-            keyfile=keys_path,
-            encrypted_dirnames=encrypted_dirnames,
-            confirm=False)
-
-        scryptopy.decrypt(
-            input=encrypted_path,
-            output=decrypted_path,
-            keyfile=keys_path,
-            sync=True,
-            encrypted_dirnames=encrypted_dirnames,
-            confirm=False)
-
+        with patch('click.echo_via_pager', return_value=None) as click_echo_mock, \
+             patch('click.prompt', side_effect=('r', 'y')) as click_prompt_mock:
+            scryptopy.encrypt(
+                input=unencrypted_path,
+                output=encrypted_path,
+                keyfile=keys_path,
+                double_check=True,
+                sync=True,
+                encrypted_dirnames=encrypted_dirnames,
+                confirm=True)
+        with patch('click.echo_via_pager', return_value=None) as click_echo_mock, \
+             patch('click.prompt', side_effect=('r', 'y')) as click_prompt_mock:
+            scryptopy.check(
+                unencrypted=unencrypted_path,
+                encrypted=encrypted_path,
+                keyfile=keys_path,
+                encrypted_dirnames=encrypted_dirnames,
+                confirm=True)
+        with patch('click.echo_via_pager', return_value=None) as click_echo_mock, \
+             patch('click.prompt', side_effect=('r', 'y')) as click_prompt_mock:
+            scryptopy.decrypt(
+                input=encrypted_path,
+                output=decrypted_path,
+                keyfile=keys_path,
+                sync=True,
+                encrypted_dirnames=encrypted_dirnames,
+                confirm=True)
         dircmp = filecmp.dircmp(unencrypted_path, decrypted_path, ignore=None, hide=None)
         self.assertEqual(dircmp.right_only, [])
         self.assertEqual(dircmp.left_only, [])
@@ -186,7 +189,6 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
         (self.temp_dir_path / 'encrypted').mkdir()
         (self.temp_dir_path / 'decrypted').mkdir()
         (self.temp_dir_path / 'keys').mkdir()
-        print(self.temp_dir)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -267,10 +269,8 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
         self.__test_directory(dname, encrypted_dirnames)
         shutil.rmtree(unencrypted_path)
 
-
     def test_subfolders_full_encrypted_dirnames(self):
         self.__test_subfolders('full_encrypted_dirnames', encrypted_dirnames=True)
-
 
     def test_subfolders_full_not_encrypted_dirnames(self):
         self.__test_subfolders('full_not_encrypted_dirnames', encrypted_dirnames=False)
@@ -283,4 +283,4 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    unittest.main('test')

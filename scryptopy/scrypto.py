@@ -27,8 +27,6 @@ import shutil
 import base64
 import jsonschema
 import click
-import tempfile
-import subprocess
 import collections
 
 
@@ -297,23 +295,19 @@ def confirm_action(action_name, files_new, files_check, files_remove):
     res = click.prompt(f'There are {len(files_new)} files to {action_name},\n' +
             f'  {len(files_check)} files to check, and\n' +
             f'  {len(files_remove)} files to remove.\nReady to proceed?\n' +
-            f'  [Y]es [n]o [r]eview (using "less")',
+            f'  [Y]es [n]o [r]eview',
             show_choices=False,
             show_default=False,
             default='y',
             type=click.Choice(['y', 'n', 'r'],
                 case_sensitive=False))
     if res == 'r':
-        f = tempfile.NamedTemporaryFile(mode='w')
-        for file in files_remove:
-            f.write(f'Remove: {file}\n')
-        for file in files_check:
-            f.write(f'Check: {file.unencrypted} vs {file.encrypted}\n')
-        for file in files_new:
-            f.write(f'{action_name_capitalized}: {file}\n')
-        f.seek(0)
-        subprocess.run(['less', f.name])
-        f.close()
+        to_show = []
+        to_show.append([f'Remove: {file}\n' for file in files_remove])
+        to_show.append([f'Check: {file.unenc_path} vs {file.enc_path}\n' for file in files_check])
+        to_show.append([f'{action_name_capitalized}: {file}\n' for file in files_new])
+        to_show = itertools.chain.from_iterable(to_show)
+        click.echo_via_pager(to_show)
         res = click.prompt(f'There are {len(files_new)} files to {action_name},\n' +
                 f'  {len(files_check)} files to check, and\n' +
                 f'  {len(files_remove)} files to remove.\nReady to proceed?' +

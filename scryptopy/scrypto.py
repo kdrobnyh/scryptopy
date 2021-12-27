@@ -457,8 +457,7 @@ def encrypt(input: Union[str, Path], output: Union[str, Path],
                 if sync:
                     output_file.unlink()
                     bar.update(0, f'{output_file.name} removed')
-                    files_new.append(EncryptedFilename(unenc_path=file.unenc_path,
-                                                       enc_path=None))
+                    files_new.append(file)
                 else:
                     logger.error(f'{file.unenc_path} is different from {file.enc_path}, exiting...')
                     sys.exit(1)
@@ -582,7 +581,7 @@ def decrypt(input: Union[str, Path], output: Union[str, Path],
                 if sync:
                     output_file.unlink()
                     bar.update(0, f'{output_file.name} removed')
-                    files_new.append(file.enc_path)
+                    files_new.append(file)
                 else:
                     logger.error(f'{file.enc_path} is different from {file.unenc_path}, exiting...')
                     sys.exit(1)
@@ -690,8 +689,9 @@ def check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
         for s in to_log:
             logger.info(s)
         logger.error('Directory content does not match, exiting...')
-        sys.exit(1)
+        return 1
     logger.info('Checking completed!')
+    return 0
 
 
 def check_wrapper(args):

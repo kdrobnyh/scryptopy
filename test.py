@@ -230,9 +230,11 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
         unencrypted_path.mkdir()
         write_lorem_ipsum(unencrypted_path / 'lorem1.txt')
         write_lorem_ipsum(unencrypted_path / 'lorem3.txt')
+        write_csv_spam(unencrypted_path / 'lorem4.txt')
         (unencrypted_path / 'texts').mkdir()
         write_lorem_ipsum(unencrypted_path / 'texts' / 'lorem1.txt')
         write_lorem_ipsum(unencrypted_path / 'texts' / 'lorem3.txt')
+        write_csv_spam(unencrypted_path / 'texts' / 'lorem4.txt')
         (unencrypted_path / 'CSVs').mkdir()
         (unencrypted_path / 'CSVs' / '1').mkdir()
         write_csv_spam(unencrypted_path / 'CSVs' / '1' / 'spam.csv')
@@ -240,6 +242,9 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
         (unencrypted_path / 'CSVs' / '3').mkdir()
         write_csv_spam(unencrypted_path / 'CSVs' / '3' /'spam.csv')
         write_csv_dict(unencrypted_path / 'CSVs' / '3' /'dict.csv')
+        (unencrypted_path / 'CSVs' / '4').mkdir()
+        write_csv_dict(unencrypted_path / 'CSVs' / '4' /'spam.csv')
+        write_csv_spam(unencrypted_path / 'CSVs' / '4' /'dict.csv')
         keys_path = self.temp_dir_path / 'keys' / dname
         with open(keys_path, 'w') as f:
             f.write(json.dumps(self.__generate_keys()))
@@ -266,6 +271,21 @@ class DirectoryEncDecCheckTestCase(unittest.TestCase):
         (unencrypted_path / 'lorem3.txt').unlink()
         (unencrypted_path / 'texts' / 'lorem3.txt').unlink()
         shutil.rmtree(unencrypted_path / 'CSVs' / '3')
+        (unencrypted_path / 'lorem4.txt').unlink()
+        (unencrypted_path / 'texts' / 'lorem4.txt').unlink()
+        shutil.rmtree(unencrypted_path / 'CSVs' / '4')
+        write_lorem_ipsum(unencrypted_path / 'lorem4.txt')
+        write_lorem_ipsum(unencrypted_path / 'texts' / 'lorem4.txt')
+        (unencrypted_path / 'CSVs' / '4').mkdir()
+        write_csv_spam(unencrypted_path / 'CSVs' / '4' /'spam.csv')
+        write_csv_dict(unencrypted_path / 'CSVs' / '4' /'dict.csv')
+        self.assertEqual(
+            scryptopy.check(
+                unencrypted=unencrypted_path,
+                encrypted=encrypted_path,
+                keyfile=keys_path,
+                encrypted_dirnames=encrypted_dirnames,
+                confirm=False), 1)
         self.__test_directory(dname, encrypted_dirnames)
         shutil.rmtree(unencrypted_path)
 

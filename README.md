@@ -108,12 +108,13 @@ The following tables constitute a formal description of the encrypted file forma
 | ENCRYPTED_FILE |  |
 | - | - |
 | PREFIX | "SCryptoPy", ASCII marker |
+| FORMAT_VERSION | One byte format version. Now only `0x00` is supported. |
 | CONTENT_BLOCK* | Zero or more content blocks |
 
 | CONTENT_BLOCK |  |
 | - | - |
 | BLOCK_TYPE | One byte block type marker |
-| BLOCK_LENGTH | One or more bytes that encode length of CONTENT_DATA block. Each byte encodes 7 bit of information. The last byte should start with bit 0, all the others should start with bit 1. E.g., length `15` is `00001111` and represented as one byte `0F` (`00001111`), length `255` is `11111111` and represented as two bytes `81 7F` (`10000001 01111111`). |
+| BLOCK_LENGTH | One or more bytes that encode length of CONTENT_DATA block. Each byte encodes 7 bit of information. The last byte should start with bit 0, all the others should start with bit 1. E.g., length `15` is `0b00001111` and represented as one byte `0x0F` (`0b00001111`), length `255` is `0b11111111` and represented as two bytes `0x81` `0x7F` (`0b10000001` `0b01111111`). |
 | CONTENT_DATA | Contains data that corresponds to BLOCK_TYPE. Should have BLOCK_LENGTH length. |
 
 One byte block type marker can have one of the following values:
@@ -148,7 +149,7 @@ One byte block type marker can have one of the following values:
 | SALT |  |
 | - | - |
 | RANDOM_SALT | Random salt in binary format |
-| ZERO_BYTE | Zero byte `00` |
+| ZERO_BYTE | Zero byte `0x00` |
 
 ### Encrypted directory structure
 

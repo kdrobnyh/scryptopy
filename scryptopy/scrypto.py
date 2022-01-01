@@ -38,11 +38,12 @@ findfont_logger = logging.getLogger('matplotlib.font_manager')
 findfont_logger.setLevel(logging.CRITICAL)
 
 
-prefix = b'SCryptoPy'
-salt_len_min = 10
-salt_len_max = 30
-filename_len = 32
-key_json_schema = {
+PREFIX = b'SCryptoPy'
+FORMAT_VERSION = b'\0'
+SALT_LEN_MIN = 10
+SALT_LEN_MAX = 30
+FILENAME_LEN = 32
+KEY_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         "keys": {
@@ -74,13 +75,13 @@ key_json_schema = {
     "additionalProperties": False
 }
 
-content_types = {'filename': 0,
+CONTENT_TYPES = {'filename': 0,
                  'dirname': 1,
                  'sha256': 254,
                  'data': 255 }
 
-content_types_back = {v: k for k, v in content_types.items()}
-length_base = 128
+CONTENT_TYPES_BACK = {v: k for k, v in CONTENT_TYPES.items()}
+LENGTH_BASE = 128
 
 
 def read_bytes(file: Path) -> bytes:
@@ -107,7 +108,7 @@ def load_keys(keyfile: Union[str, Path]) -> Dict[str, List[Dict]]:
     with open(keyfile_path) as json_file:
         try:
             keys_loaded = json.load(json_file)
-            jsonschema.validate(instance=keys_loaded, schema=key_json_schema)
+            jsonschema.validate(instance=keys_loaded, schema=KEY_JSON_SCHEMA)
             keys = keys_loaded["keys"]
             l = len(keys)
             keys_dict = {}
@@ -124,11 +125,11 @@ def load_keys(keyfile: Union[str, Path]) -> Dict[str, List[Dict]]:
 
 
 def generate_filename() -> str:
-    return secrets.token_urlsafe(filename_len)[:filename_len]
+    return secrets.token_urlsafe(FILENAME_LEN)[:FILENAME_LEN]
 
 
 def generate_salt() -> str:
-    length = salt_len_min + secrets.randbelow(salt_len_max - salt_len_min)
+    length = SALT_LEN_MIN + secrets.randbelow(SALT_LEN_MAX - SALT_LEN_MIN)
     return secrets.token_urlsafe(length)[:length]
 
 
@@ -167,17 +168,17 @@ def encrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
 def encrypt_content(content: Dict[str, bytes], keys: List[Dict]) -> bytes:
     if 'data' in content:
         content['sha256'] = calc_sha256sum(content['data'])
-    data = prefix
-    wrong_types = [t for t in content.keys() if t not in content_types.keys()]
+    data = PREFIX + FORMAT_VERSION
+    wrong_types = [t for t in content.keys() if t not in CONTENT_TYPES.keys()]
     for t in wrong_types:
         logger.error(f'Content type {t} is not recognized, should be one of these:')
-        logger.error(f'\t"{content_types.keys()}", exiting...')
+        logger.error(f'\t"{CONTENT_TYPES.keys()}", exiting...')
         sys.exit(1)
 
-    for t in content_types.keys():
+    for t in CONTENT_TYPES.keys():
         if t not in content.keys():
             continue
-        data += bytes((content_types[t],))
+        data += bytes((CONTENT_TYPES[t],))
         data_temp = b''
         if t == 'sha256':
             data_temp = content[t].encode('utf-8')
@@ -189,13 +190,13 @@ def encrypt_content(content: Dict[str, bytes], keys: List[Dict]) -> bytes:
             data_temp = encrypt_bytes(content[t], keys['data_key_index'])
         else:
             logger.error(f'Content type {t} is not recognized, should be one of these:')
-            logger.error(f'\t"{content_types.keys()}", exiting...')
+            logger.error(f'\t"{CONTENT_TYPES.keys()}", exiting...')
             sys.exit(1)
         length = len(data_temp)
-        length_bytes = bytes((length % length_base, ))
-        while length >= length_base:
-            length = length // length_base
-            length_bytes += bytes((length_base + length % length_base, ))
+        length_bytes = bytes((length % LENGTH_BASE, ))
+        while length >= LENGTH_BASE:
+            length = length // LENGTH_BASE
+            length_bytes += bytes((LENGTH_BASE + length % LENGTH_BASE, ))
         data += length_bytes[::-1]
         data += data_temp
     return data
@@ -204,11 +205,10 @@ def encrypt_content(content: Dict[str, bytes], keys: List[Dict]) -> bytes:
 def decrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
     for i in reversed(range(len(keys))):
         key = keys[i]
-        # for i, key in enumerate(keys)[::-1]:
         algorithm = key['algorithm']
         salts = {}
         for j in range(key['num_salts']):
-            pos = data.find(b'\0', salt_len_min, salt_len_max)
+            pos = data.find(b'\0', SALT_LEN_MIN, SALT_LEN_MAX)
             if pos == -1:
                 logger.error(f'Cannot decrypt: cannot find the salt (stage {i}/{len(keys)})...')
                 sys.exit(1)
@@ -226,19 +226,23 @@ def decrypt_bytes(data: bytes, keys: List[Dict]) -> bytes:
 def decrypt_file(filename: Path, keys: List[Dict],
                  needed_content_types: List[str] = []) -> Dict[str, bytes]:
     data = read_bytes(filename)
-    if not data.startswith(prefix):
+    if not data.startswith(PREFIX):
         logger.error(f'Cannot decrypt "{filename}": wrong file content...')
         sys.exit(1)
-    data = data[len(prefix):]
+    data = data[len(PREFIX):]
+    if data[0:1] != FORMAT_VERSION:
+        logger.error(f'Cannot decrypt "{filename}": wrong format version...')
+        sys.exit(1)
+    data = data[1:]
     content = {}
     while len(data) > 0:
         t = data[0]
         data = data[1:]
-        if t not in content_types_back.keys():
+        if t not in CONTENT_TYPES_BACK.keys():
             logger.error(f'Content type {t} is not recognized, should be one of these:')
-            logger.error(f'\t"{content_types_back.keys()}", exiting...')
+            logger.error(f'\t"{CONTENT_TYPES_BACK.keys()}", exiting...')
             sys.exit(1)
-        t = content_types_back[t]
+        t = CONTENT_TYPES_BACK[t]
         length_total = 0
         length_current = 128
         while length_current >= 128:
@@ -266,7 +270,7 @@ def decrypt_file(filename: Path, keys: List[Dict],
             content[t] = decrypt_bytes(data_temp, keys['data_key_index'])
         else:
             logger.error(f'Content type {t} is not recognized, should be one of these:')
-            logger.error(f'\t"{content_types.keys()}", exiting...')
+            logger.error(f'\t"{CONTENT_TYPES.keys()}", exiting...')
             sys.exit(1)
     missing_contents = [t for t in needed_content_types if t not in content]
     if missing_contents:
@@ -688,7 +692,7 @@ def check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
     if not is_ok:
         for s in to_log:
             logger.info(s)
-        logger.error('Directory content does not match, exiting...')
+        logger.error('Directory content does not match')
         return 1
     logger.info('Checking completed!')
     return 0

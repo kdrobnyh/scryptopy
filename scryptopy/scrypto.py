@@ -511,7 +511,8 @@ def encrypt_wrapper(args):
         keyfile=args.keyfile,
         double_check=args.double_check,
         encrypted_dirnames=not args.no_encrypt_dirnames,
-        sync=args.sync)
+        sync=args.sync,
+        confirm=not args.yes)
 
 
 def decrypt(input: Union[str, Path], output: Union[str, Path],
@@ -617,7 +618,8 @@ def decrypt_wrapper(args):
         output=args.output,
         keyfile=args.keyfile,
         encrypted_dirnames=not args.no_encrypt_dirnames,
-        sync=args.sync)
+        sync=args.sync,
+        confirm=not args.yes)
 
 
 def check(unencrypted: Union[str, Path], encrypted: Union[str, Path],
@@ -703,12 +705,18 @@ def check_wrapper(args):
         unencrypted=args.unencrypted,
         encrypted=args.encrypted,
         keyfile=args.keyfile,
-        encrypted_dirnames=~args.no_encrypt_dirnames)
+        encrypted_dirnames=~args.no_encrypt_dirnames,
+        confirm=not args.yes)
 
+def find_encrypted_path():
+    # TODO
+    pass
 
 def main():
     FORMAT = '[{filename}:{lineno} - {funcName}(): {levelname}] {message}'
     parser = argparse.ArgumentParser()
+    parser.add_argument('-y', '--yes', action='store_true',
+                        help='do not ask for confirmation')
     parser.add_argument('-v', '--verbose', action='store_true',
                             help='enable verbose debug output')
     parser.add_argument('-p', '--print_arguments', action='store_true',

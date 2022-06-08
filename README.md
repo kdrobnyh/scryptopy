@@ -162,6 +162,7 @@ SCryptoPy is composed of multiple commands, similar to `git`.
 ### Common arguments
 
 * `-v, --verbose` - Enable verbose debug output
+* `-y, --yes` - Do not ask for confirmation
 * `-p, --print_arguments` - Print arguments and exit the script
 * `-ded, --no_encrypt_dirnames` - Do not encrypt directory names
 
